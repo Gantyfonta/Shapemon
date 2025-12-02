@@ -11,20 +11,22 @@ import {
   PlayerAction,
   TurnEvent,
   MultiplayerMessage
-} from './types';
+} from './types.ts';
 import { 
   INITIAL_PLAYER_TEAM, 
   INITIAL_ENEMY_TEAM, 
   TYPE_CHART,
   createInstance,
+  SPECIES,
+  ITEMS,
   TeamMemberConfig
-} from './constants';
-import { getAIMove } from './services/geminiService';
-import { peerService, generateRoomId } from './services/peerService';
-import { resolveTurn } from './utils/battleLogic';
-import { HealthBar } from './components/HealthBar';
-import { ShapeVisual } from './components/ShapeVisual';
-import { Teambuilder } from './components/Teambuilder';
+} from './constants.ts';
+import { getAIMove } from './services/geminiService.ts';
+import { peerService, generateRoomId } from './services/peerService.ts';
+import { resolveTurn } from './utils/battleLogic.ts';
+import { HealthBar } from './components/HealthBar.tsx';
+import { ShapeVisual } from './components/ShapeVisual.tsx';
+import { Teambuilder } from './components/Teambuilder.tsx';
 
 export default function App() {
   // --- Game Mode State ---
@@ -37,10 +39,11 @@ export default function App() {
   // --- Battle State ---
   const [playerTeam, setPlayerTeam] = useState<ShapeInstance[]>(INITIAL_PLAYER_TEAM);
   const [enemyTeam, setEnemyTeam] = useState<ShapeInstance[]>(INITIAL_ENEMY_TEAM);
+  
   const [activePlayerIdx, setActivePlayerIdx] = useState(0);
   const [activeEnemyIdx, setActiveEnemyIdx] = useState(0);
   
-  const [phase, setPhase] = useState<TurnPhase>('LOBBY'); // Start in Lobby
+  const [phase, setPhase] = useState<TurnPhase>('LOBBY');
   const [logs, setLogs] = useState<string[]>(['Welcome to Shape Showdown!']);
   const [animatingShape, setAnimatingShape] = useState<'player' | 'enemy' | null>(null);
   const [animatingAction, setAnimatingAction] = useState<string>('');
@@ -53,571 +56,525 @@ export default function App() {
 
   // --- Teambuilder State ---
   const [savedTeamConfig, setSavedTeamConfig] = useState<TeamMemberConfig[] | null>(null);
+  const [showTeambuilder, setShowTeambuilder] = useState(false);
 
   // Load team on mount
   useEffect(() => {
-    const saved = localStorage.getItem('shape_showdown_team');
-    if (saved) {
-      try {
-        setSavedTeamConfig(JSON.parse(saved));
-      } catch (e) {
-        console.error("Failed to load saved team", e);
+    try {
+      const saved = localStorage.getItem('shape_showdown_team');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Basic validation to ensure data integrity
+        if (Array.isArray(parsed) && parsed.length === 3 && parsed[0].species && SPECIES[parsed[0].species as keyof typeof SPECIES]) {
+          setSavedTeamConfig(parsed);
+        }
       }
+    } catch (e) {
+      console.error("Failed to load saved team", e);
     }
   }, []);
 
-  const handleSaveTeam = (team: TeamMemberConfig[]) => {
-    setSavedTeamConfig(team);
-    localStorage.setItem('shape_showdown_team', JSON.stringify(team));
-  };
-
-  // Helper to build team instances from config
-  const buildTeamInstances = (prefix: string): ShapeInstance[] => {
-    if (savedTeamConfig) {
-      return savedTeamConfig.map(config => 
-        createInstance(config.species, 50, prefix, config.moves, config.item)
-      );
-    }
-    // Fallback to default if no custom team
-    return INITIAL_PLAYER_TEAM.map(s => ({...s, id: prefix + s.id.substring(2)})); 
-  };
-  
-  // Derived state
-  const activePlayer = playerTeam[activePlayerIdx];
-  const activeEnemy = enemyTeam[activeEnemyIdx];
-
-  // Auto-scroll logs
+  // Scroll logs
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
-  // --- Logic Helpers ---
+  // --- Helper: Build Team from Config ---
+  const buildTeamFromConfig = (config: TeamMemberConfig[] | null, idPrefix: string): ShapeInstance[] => {
+    if (!config) {
+      // Return defaults if no config
+      return idPrefix === 'p1' ? INITIAL_PLAYER_TEAM : INITIAL_ENEMY_TEAM;
+    }
+    return config.map(member => 
+      createInstance(member.species, 50, idPrefix, member.moves, member.item)
+    );
+  };
+
+  // --- Multiplayer Logic ---
+  useEffect(() => {
+    peerService.onData((msg: MultiplayerMessage) => {
+      console.log('Received:', msg);
+      
+      switch (msg.type) {
+        case 'HANDSHAKE':
+          // Opponent sent their team
+          const theirTeam = msg.payload.team.map((s: any) => ({
+             ...s,
+             moves: s.moves.map((m: any) => ({ ...m })) // Deep copy moves
+          }));
+          setEnemyTeam(theirTeam);
+          setLobbyStatus('Opponent connected! Starting battle...');
+          
+          // If we are guest, we also need to send our team now if we haven't (Host sends first usually)
+          // But simpliest is: Both send HANDSHAKE upon connection.
+          setTimeout(() => {
+            setPhase('SELECT');
+            addLog("Battle Started!");
+          }, 1000);
+          break;
+
+        case 'ACTION':
+          setPendingEnemyAction(msg.payload);
+          if (gameMode === 'MULTI_HOST') {
+            checkTurnExecution(undefined, msg.payload);
+          }
+          setLobbyStatus('Opponent has made a move!');
+          break;
+
+        case 'TURN_RESULT':
+          // Guest receives full turn simulation
+          if (gameMode === 'MULTI_GUEST') {
+            playTurnEvents(msg.payload);
+          }
+          break;
+          
+        case 'RESTART':
+          window.location.reload();
+          break;
+      }
+    });
+
+    peerService.onConnect(() => {
+      setIsConnected(true);
+      setLobbyStatus('Connected! Exchanging team data...');
+      
+      // Send our team data
+      const myCurrentTeam = buildTeamFromConfig(savedTeamConfig, 'p1'); 
+      // We need to use the actual state if we want to support editing before battle, 
+      // but for now let's rebuild fresh from config or defaults
+      setPlayerTeam(myCurrentTeam);
+
+      peerService.send({
+        type: 'HANDSHAKE',
+        payload: { team: myCurrentTeam }
+      });
+    });
+  }, [gameMode, savedTeamConfig]);
+
+  const hostGame = async () => {
+    try {
+      const id = await peerService.init();
+      setRoomId(id);
+      setGameMode('MULTI_HOST');
+      setPhase('LOBBY');
+      setLobbyStatus('Waiting for opponent...');
+    } catch (e) {
+      alert('Error starting host: ' + e);
+    }
+  };
+
+  const joinGame = async () => {
+    if (!inputRoomId) return;
+    try {
+      await peerService.init();
+      await peerService.connect(inputRoomId);
+      setGameMode('MULTI_GUEST');
+      setPhase('LOBBY');
+      setLobbyStatus('Connecting...');
+    } catch (e) {
+      alert('Error joining: ' + e);
+    }
+  };
+
+  const startSinglePlayer = () => {
+    setGameMode('SINGLE');
+    setPlayerTeam(buildTeamFromConfig(savedTeamConfig, 'p1'));
+    // Generate random enemy team or standard
+    setEnemyTeam(INITIAL_ENEMY_TEAM); 
+    setPhase('SELECT');
+    setLogs(['Battle Start!']);
+  };
 
   const addLog = (msg: string) => {
     setLogs(prev => [...prev, msg]);
   };
 
-  // --- Initialization & Lobby ---
+  // --- Battle Logic ---
 
-  const startSinglePlayer = () => {
-    setGameMode('SINGLE');
-    setPlayerTeam(buildTeamInstances('p1'));
-    // AI uses default enemy team for now
-    setEnemyTeam(INITIAL_ENEMY_TEAM.map(s => ({...s, status: 'ALIVE', stats: {...s.stats, hp: s.stats.maxHp}})));
-    setPhase('SELECT');
-    setLogs(['Battle started vs AI!', 'What will you do?']);
+  const executeTurn = (pAction: PlayerAction, eAction: PlayerAction) => {
+    const events = resolveTurn(pAction, eAction, playerTeam[activePlayerIdx], enemyTeam[activeEnemyIdx], playerTeam, enemyTeam);
+    playTurnEvents(events);
   };
-
-  const createRoom = async () => {
-    setLobbyStatus('Creating room...');
-    try {
-      const id = await peerService.init();
-      setRoomId(id);
-      setGameMode('MULTI_HOST');
-      setLobbyStatus('Waiting for opponent to join...');
-      setupMultiplayerHandlers();
-    } catch (e) {
-      setLobbyStatus('Error creating room.');
-    }
-  };
-
-  const joinRoom = async () => {
-    if (!inputRoomId) return;
-    setLobbyStatus(`Connecting to ${inputRoomId}...`);
-    try {
-      await peerService.init(); // Init with random ID
-      await peerService.connect(inputRoomId);
-      setGameMode('MULTI_GUEST');
-      setRoomId(inputRoomId);
-      setLobbyStatus('Connected! Sending handshake...');
-      setupMultiplayerHandlers();
-    } catch (e) {
-      setLobbyStatus('Could not connect. Check ID.');
-    }
-  };
-
-  const setupMultiplayerHandlers = () => {
-    peerService.onConnect(() => {
-      setIsConnected(true);
-      // Handshake: Send my custom team
-      const myTeam = buildTeamInstances('p1');
-      setPlayerTeam(myTeam);
-      
-      peerService.send({
-        type: 'HANDSHAKE',
-        payload: { team: myTeam }
-      });
-    });
-
-    peerService.onData((data: MultiplayerMessage) => {
-      handleNetworkMessage(data);
-    });
-  };
-
-  const handleNetworkMessage = (msg: MultiplayerMessage) => {
-    switch (msg.type) {
-      case 'HANDSHAKE':
-        const oppTeam = msg.payload.team.map((s: ShapeInstance) => ({ ...s, id: s.id.replace('p1', 'p2') }));
-        setEnemyTeam(oppTeam);
-        setPhase('SELECT');
-        setLogs(['Multiplayer Connection Established!', 'Battle Start!']);
-        break;
-      
-      case 'ACTION':
-        setPendingEnemyAction(msg.payload);
-        break;
-
-      case 'TURN_RESULT':
-        playTurnSequence(msg.payload.events);
-        break;
-    }
-  };
-
-  // --- Battle Logic Overrides ---
 
   const handlePlayerAction = async (action: PlayerAction) => {
     if (phase !== 'SELECT') return;
 
+    setPendingPlayerAction(action);
+    setPhase('WAITING');
+
     if (gameMode === 'SINGLE') {
-      setPhase('ANIMATING');
+      // AI Logic
+      const playerShape = playerTeam[activePlayerIdx];
+      const enemyShape = enemyTeam[activeEnemyIdx];
       
-      const aiDecision = await getAIMove(activeEnemy, activePlayer, 'CLEAR');
+      // Simple weather check (not fully implemented yet)
+      const weather = 'CLEAR'; 
+      
+      const aiDecision = await getAIMove(enemyShape, playerShape, weather);
+      addLog(`Enemy: "${aiDecision.taunt}"`);
+      
       const enemyAction: PlayerAction = { type: 'MOVE', index: aiDecision.moveIndex };
-      addLog(`Opponent: "${aiDecision.taunt}"`);
       
-      const events = resolveTurn(action, enemyAction, activePlayer, activeEnemy, playerTeam, enemyTeam);
-      await playTurnSequence(events);
-      
+      // Resolve immediately
+      executeTurn(action, enemyAction);
     } else {
-      setPendingPlayerAction(action);
-      setPhase('WAITING');
-      addLog("Waiting for opponent...");
+      // Multiplayer
+      peerService.send({ type: 'ACTION', payload: action });
+      setLobbyStatus('Waiting for opponent...');
       
-      peerService.send({
-        type: 'ACTION',
-        payload: action
-      });
+      if (gameMode === 'MULTI_HOST') {
+        checkTurnExecution(action, undefined);
+      }
     }
   };
 
-  // Multiplayer: Host Turn Resolution
-  useEffect(() => {
-    if (gameMode === 'MULTI_HOST' && pendingPlayerAction && pendingEnemyAction) {
-      const events = resolveTurn(
-        pendingPlayerAction, 
-        pendingEnemyAction, 
-        playerTeam[activePlayerIdx], 
-        enemyTeam[activeEnemyIdx],
-        playerTeam,
-        enemyTeam
-      );
+  const checkTurnExecution = (pAction?: PlayerAction, eAction?: PlayerAction) => {
+    const p = pAction || pendingPlayerAction;
+    const e = eAction || pendingEnemyAction;
 
-      peerService.send({
-        type: 'TURN_RESULT',
-        payload: { events }
-      });
+    if (p && e) {
+      // Both ready
+      const events = resolveTurn(p, e, playerTeam[activePlayerIdx], enemyTeam[activeEnemyIdx], playerTeam, enemyTeam);
+      
+      // Send results to guest
+      peerService.send({ type: 'TURN_RESULT', payload: events });
+      
+      // Play locally
+      playTurnEvents(events);
 
-      playTurnSequence(events);
-
+      // Reset
       setPendingPlayerAction(null);
       setPendingEnemyAction(null);
     }
-  }, [pendingPlayerAction, pendingEnemyAction, gameMode, activePlayerIdx, activeEnemyIdx, playerTeam, enemyTeam]);
+  };
 
-
-  // --- Turn Playback (Visuals & State Updates) ---
-
-  const playTurnSequence = async (events: TurnEvent[]) => {
+  const playTurnEvents = async (events: TurnEvent[]) => {
     setPhase('ANIMATING');
 
     for (const event of events) {
+      // Small delay between events
+      await new Promise(r => setTimeout(r, 600));
+
       switch (event.type) {
         case 'LOG':
           addLog(event.message || '');
-          await new Promise(r => setTimeout(r, 400));
           break;
-        
         case 'ATTACK_ANIM':
-          setAnimatingShape(event.attacker!);
+          setAnimatingShape(event.attacker === 'player' ? 'player' : 'enemy');
           setAnimatingAction(event.attacker === 'player' ? 'animate-attack-right' : 'animate-attack-left');
-          await new Promise(r => setTimeout(r, 400));
-          setAnimatingShape(null);
-          setAnimatingAction('');
+          setTimeout(() => {
+            setAnimatingShape(null);
+            setAnimatingAction('');
+          }, 300);
           break;
-
         case 'DAMAGE':
-          const targetIsPlayer = event.target === 'player';
-          setAnimatingShape(targetIsPlayer ? 'player' : 'enemy');
+          setAnimatingShape(event.target === 'player' ? 'player' : 'enemy');
           setAnimatingAction('animate-shake');
+          setTimeout(() => {
+             setAnimatingShape(null);
+             setAnimatingAction('');
+          }, 500);
+          // Update HP visually is handled by React state since we mutated the objects in resolveTurn
+          // In a real Redux app we would dispatch updates. Here, we force update via state copy.
+          setPlayerTeam([...playerTeam]);
+          setEnemyTeam([...enemyTeam]);
+          break;
+        case 'HEAL':
+          setPlayerTeam([...playerTeam]);
+          setEnemyTeam([...enemyTeam]);
+          break;
+        case 'SWITCH_ANIM':
+          if (event.target === 'player') setActivePlayerIdx(event.newActiveIndex || 0);
+          else setActiveEnemyIdx(event.newActiveIndex || 0);
+          break;
+        case 'FAINT':
+          setAnimatingShape(event.target === 'player' ? 'player' : 'enemy');
+          setAnimatingAction('animate-faint');
+          await new Promise(r => setTimeout(r, 1000));
           
-          if (targetIsPlayer) {
-            setPlayerTeam(prev => applyDamage(prev, event.amount || 0, true));
-          } else {
-            setEnemyTeam(prev => applyDamage(prev, event.amount || 0, false));
-          }
-          await new Promise(r => setTimeout(r, 600));
+          setPlayerTeam([...playerTeam]);
+          setEnemyTeam([...enemyTeam]);
           setAnimatingShape(null);
           setAnimatingAction('');
-          break;
-
-        case 'HEAL':
-           if (event.attacker === 'player') {
-             setPlayerTeam(prev => applyHeal(prev, event.amount || 0, true));
-           } else {
-             setEnemyTeam(prev => applyHeal(prev, event.amount || 0, false));
-           }
-           await new Promise(r => setTimeout(r, 500));
-           break;
-
-        case 'SWITCH_ANIM':
-           if (event.target === 'player') {
-             setActivePlayerIdx(event.newActiveIndex!);
-           } else {
-             setActiveEnemyIdx(event.newActiveIndex!);
-           }
-           await new Promise(r => setTimeout(r, 1000));
-           break;
           
-        case 'FAINT':
-           await new Promise(r => setTimeout(r, 1000));
-           break;
-      }
-    }
-
-    setPhase('SELECT');
-  };
-
-  const applyDamage = (team: ShapeInstance[], dmg: number, isPlayer: boolean) => {
-    return team.map((member, i) => {
-       if (i === (isPlayer ? playerIdxRef.current : enemyIdxRef.current)) {
-         const newHp = Math.max(0, member.stats.hp - dmg);
-         return { ...member, stats: { ...member.stats, hp: newHp }, status: newHp === 0 ? 'FAINTED' : member.status };
-       }
-       return member;
-    });
-  };
-
-  const applyHeal = (team: ShapeInstance[], amount: number, isPlayer: boolean) => {
-    return team.map((member, i) => {
-       if (i === (isPlayer ? playerIdxRef.current : enemyIdxRef.current)) {
-         const newHp = Math.min(member.stats.maxHp, member.stats.hp + amount);
-         return { ...member, stats: { ...member.stats, hp: newHp } };
-       }
-       return member;
-    });
-  };
-
-  const playerIdxRef = useRef(0);
-  const enemyIdxRef = useRef(0);
-
-  useEffect(() => { playerIdxRef.current = activePlayerIdx; }, [activePlayerIdx]);
-  useEffect(() => { enemyIdxRef.current = activeEnemyIdx; }, [activeEnemyIdx]);
-
-
-  // --- Post-Turn Checks (Faints) ---
-  
-  useEffect(() => {
-    if (phase === 'SELECT' || phase === 'WAITING') {
-      const playerAlive = playerTeam.some(s => s.status === 'ALIVE');
-      const enemyAlive = enemyTeam.some(s => s.status === 'ALIVE');
-
-      if (!playerAlive) {
-        setPhase('GAME_OVER');
-        addLog("You have no shapes left! Defeat!");
-      } else if (!enemyAlive) {
-        setPhase('GAME_OVER');
-        addLog("Opponent has no shapes left! Victory!");
-      } else {
-        if (activePlayer.stats.hp <= 0) {
-           addLog(`${activePlayer.name} is down! Choose a replacement.`);
-           setPhase('SWITCH');
-        }
-        if (activeEnemy.stats.hp <= 0) {
-           addLog(`${activeEnemy.name} fainted!`);
-           if (gameMode === 'SINGLE') {
-             const nextIdx = enemyTeam.findIndex(s => s.status === 'ALIVE');
-             if (nextIdx !== -1) {
-               setTimeout(() => {
-                 setActiveEnemyIdx(nextIdx);
-                 addLog(`Opponent sent out ${enemyTeam[nextIdx].name}!`);
-               }, 1500);
+          // Trigger force switch if needed
+          if (event.target === 'player') {
+             // Check if any left
+             if (playerTeam.some(s => s.stats.hp > 0)) {
+               setPhase('SWITCH'); 
+               return; // Stop processing other events until switch
+             } else {
+               setPhase('GAME_OVER');
+               addLog('You ran out of shapes! Game Over.');
+               return;
              }
-           } else {
-             addLog("Waiting for opponent to switch...");
-             setPhase('WAITING'); 
-           }
-        }
+          } else {
+             if (enemyTeam.some(s => s.stats.hp > 0)) {
+               // In Single Player, AI switches automatically. 
+               // In Multi, we wait? For simplicity, we auto-switch to first available for now or implement logic.
+               // Let's simple auto-switch for now to keep flow
+               const nextIdx = enemyTeam.findIndex(s => s.stats.hp > 0);
+               if (nextIdx !== -1) {
+                  setActiveEnemyIdx(nextIdx);
+                  addLog(`Opponent sent out ${enemyTeam[nextIdx].name}!`);
+               }
+             } else {
+               setPhase('GAME_OVER');
+               addLog('Opponent ran out of shapes! You Win!');
+               return;
+             }
+          }
+          break;
       }
     }
-  }, [playerTeam, enemyTeam, phase, activePlayer, activeEnemy, gameMode]);
 
+    // End of events
+    if (phase !== 'GAME_OVER' && phase !== 'SWITCH') {
+       setPhase('SELECT');
+    }
+  };
 
-  // --- Rendering ---
-  
-  if (phase === 'TEAMBUILDER') {
+  const handleForcedSwitch = (index: number) => {
+    if (playerTeam[index].stats.hp <= 0) return;
+    
+    // Send switch action if multiplayer
+    const action: PlayerAction = { type: 'SWITCH', index };
+    
+    // Logic specific to forced switch phase (skip turn resolution, just do it)
+    setActivePlayerIdx(index);
+    setPhase('SELECT');
+    addLog(`Go! ${playerTeam[index].name}!`);
+    
+    if (gameMode !== 'SINGLE') {
+       // In a real robust engine, forced switches are handled carefully. 
+       // For this jam version, we just local update.
+    }
+  };
+
+  // --- Renders ---
+
+  if (showTeambuilder) {
     return (
       <Teambuilder 
-        onBack={() => setPhase('LOBBY')} 
-        onSave={handleSaveTeam} 
         initialTeam={savedTeamConfig || undefined}
+        onBack={() => setShowTeambuilder(false)}
+        onSave={(newTeam) => {
+           setSavedTeamConfig(newTeam);
+           localStorage.setItem('shape_showdown_team', JSON.stringify(newTeam));
+        }}
       />
     );
   }
 
+  // Lobby Render
   if (phase === 'LOBBY') {
     return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4 font-mono">
-        <div className="max-w-2xl w-full bg-gray-800 border-2 border-green-500 rounded-lg p-8 shadow-[0_0_20px_rgba(0,255,0,0.2)]">
-          <h1 className="text-4xl text-green-500 text-center mb-8 pixel-font animate-pulse">SHAPE SHOWDOWN</h1>
-          
-          <div className="space-y-6">
-            
-            {/* Teambuilder Button */}
-            <button 
-              onClick={() => setPhase('TEAMBUILDER')}
-              className="w-full bg-blue-900 hover:bg-blue-800 text-blue-200 py-3 px-4 rounded transition-colors text-center border border-blue-600 font-bold"
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-900 text-white p-4">
+        <h1 className="text-4xl md:text-6xl mb-8 pixel-font text-yellow-400 text-center leading-relaxed">
+          SHAPE SHOWDOWN
+        </h1>
+        
+        {roomId ? (
+          <div className="bg-gray-800 p-8 rounded-lg border-2 border-blue-500 text-center animate-pulse">
+            <p className="mb-4 text-gray-400">Room Code:</p>
+            <p className="text-5xl font-mono font-bold tracking-widest text-white mb-6">{roomId}</p>
+            <p className="text-sm text-blue-300">{lobbyStatus}</p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-4 w-full max-w-md">
+             <button 
+              onClick={startSinglePlayer}
+              className="py-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 rounded-lg font-bold text-xl shadow-lg transform transition active:scale-95"
             >
-               CONFIGURE TEAM {savedTeamConfig ? '(Custom Loaded)' : '(Default)'}
+              SINGLE PLAYER
             </button>
-
-            <div className="bg-black p-4 rounded border border-gray-700">
-              <h2 className="text-xl text-white mb-2">Single Player</h2>
+            
+            <div className="flex gap-2">
               <button 
-                onClick={startSinglePlayer}
-                className="w-full bg-gray-700 hover:bg-gray-600 text-white py-3 px-4 rounded transition-colors text-left flex justify-between items-center"
+                onClick={hostGame}
+                className="flex-1 py-4 bg-purple-700 hover:bg-purple-600 rounded-lg font-bold shadow-lg"
               >
-                <span>VS AI Opponent</span>
-                <span className="text-xs bg-blue-600 px-2 py-1 rounded">OFFLINE</span>
+                CREATE ROOM
               </button>
             </div>
 
-            <div className="bg-black p-4 rounded border border-gray-700">
-              <h2 className="text-xl text-white mb-4">Multiplayer Room</h2>
-              
-              {!isConnected ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <button 
-                    onClick={createRoom}
-                    className="bg-green-700 hover:bg-green-600 text-white py-4 rounded font-bold border-b-4 border-green-900 active:border-b-0 active:translate-y-1"
-                  >
-                    CREATE ROOM
-                  </button>
-                  
-                  <div className="flex flex-col space-y-2">
-                    <input 
-                      type="text" 
-                      placeholder="ENTER ROOM ID" 
-                      value={inputRoomId}
-                      onChange={(e) => setInputRoomId(e.target.value.toUpperCase())}
-                      className="bg-gray-800 border border-gray-600 text-white p-2 rounded text-center tracking-widest uppercase"
-                      maxLength={4}
-                    />
-                    <button 
-                      onClick={joinRoom}
-                      disabled={inputRoomId.length !== 4}
-                      className="bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white py-2 rounded font-bold"
-                    >
-                      JOIN ROOM
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-center text-green-400 py-4">
-                   {lobbyStatus}
-                </div>
-              )}
-              
-              {roomId && !isConnected && (
-                <div className="mt-4 text-center">
-                  <p className="text-gray-400 text-sm">Room Created. Share this code:</p>
-                  <div className="text-5xl text-white font-bold my-2 tracking-widest select-all cursor-pointer bg-gray-900 p-4 rounded border border-dashed border-gray-600">
-                    {roomId}
-                  </div>
-                  <p className="text-yellow-500 text-xs animate-pulse">{lobbyStatus}</p>
-                </div>
-              )}
+            <div className="flex gap-2 bg-gray-800 p-2 rounded-lg border border-gray-700">
+              <input 
+                value={inputRoomId}
+                onChange={(e) => setInputRoomId(e.target.value.toUpperCase())}
+                placeholder="ROOM CODE"
+                className="flex-1 bg-transparent text-center font-mono text-xl outline-none uppercase placeholder-gray-600"
+                maxLength={4}
+              />
+              <button 
+                onClick={joinGame}
+                className="px-6 bg-green-600 hover:bg-green-500 rounded font-bold"
+              >
+                JOIN
+              </button>
             </div>
+
+            <button 
+              onClick={() => setShowTeambuilder(true)}
+              className="mt-4 py-2 text-gray-400 hover:text-white border border-gray-700 rounded hover:border-gray-500 transition"
+            >
+              TEAMBUILDER
+            </button>
           </div>
-        </div>
+        )}
       </div>
     );
   }
 
+  const activePlayer = playerTeam[activePlayerIdx];
+  const activeEnemy = enemyTeam[activeEnemyIdx];
+
+  // Battle Render
   return (
-    <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
-      <div className="max-w-4xl w-full bg-gray-800 rounded-xl shadow-2xl overflow-hidden border border-gray-700 flex flex-col h-[800px] md:h-[600px]">
-        
-        {/* Battle Arena */}
-        <div className="flex-grow relative bg-gray-900 overflow-hidden bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]">
-          {/* Background Decor */}
-          <div className="absolute inset-0 opacity-10 bg-gradient-to-br from-purple-900 to-blue-900 pointer-events-none"></div>
-          
-          {/* Room Code Badge */}
-          {gameMode !== 'SINGLE' && (
-            <div className="absolute top-2 left-2 z-20 bg-black/50 text-xs text-gray-400 px-2 py-1 rounded border border-gray-700">
-              ROOM: <span className="text-white font-bold">{roomId}</span>
-            </div>
-          )}
-
-          {/* Opponent Zone */}
-          <div className="absolute top-8 right-8 flex flex-col items-end z-10">
-            <HealthBar 
-              current={activeEnemy.stats.hp} 
-              max={activeEnemy.stats.maxHp} 
-              label={activeEnemy.name} 
-            />
-            <div className="mt-8 mr-12 relative">
-               <ShapeVisual 
-                  shape={activeEnemy} 
-                  animation={animatingShape === 'enemy' ? animatingAction : ''}
-                />
-            </div>
-          </div>
-
-          {/* Player Zone */}
-          <div className="absolute bottom-8 left-8 flex flex-col items-start z-10">
-            <div className="mb-8 ml-12 relative">
-               <ShapeVisual 
-                 shape={activePlayer} 
-                 isAlly 
-                 animation={animatingShape === 'player' ? animatingAction : ''}
-               />
-            </div>
-            <HealthBar 
-              current={activePlayer.stats.hp} 
-              max={activePlayer.stats.maxHp} 
-              label={activePlayer.name} 
-              isAlly
-            />
-             {activePlayer.heldItem && (
-               <div className="ml-2 text-[10px] text-gray-400 bg-black/50 px-2 rounded">
-                 Held: {activePlayer.heldItem.name}
-               </div>
-             )}
-          </div>
-          
-          {/* Game Over Overlay */}
-          {phase === 'GAME_OVER' && (
-            <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-50">
-              <div className="text-center">
-                 <h1 className="text-5xl font-bold text-white pixel-font mb-4">GAME OVER</h1>
-                 <button 
-                   onClick={() => window.location.reload()}
-                   className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded"
-                 >
-                   Back to Lobby
-                 </button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* UI Panel */}
-        <div className="h-1/3 bg-gray-800 border-t-4 border-gray-700 flex flex-col md:flex-row">
-          
-          {/* Left: Logs */}
-          <div className="w-full md:w-1/2 p-4 bg-gray-900 border-r border-gray-700 overflow-y-auto font-mono text-sm text-gray-300 h-32 md:h-auto">
-            {logs.map((log, i) => (
-              <div key={i} className="mb-1 border-l-2 border-blue-500 pl-2">{log}</div>
-            ))}
-            <div ref={logsEndRef} />
-          </div>
-
-          {/* Right: Controls */}
-          <div className="w-full md:w-1/2 p-4 grid grid-cols-2 gap-2 relative">
-            
-            {/* Switching UI */}
-            {phase === 'SWITCH' && (
-              <div className="absolute inset-0 bg-gray-800 z-20 p-4 grid grid-cols-3 gap-2">
-                 {playerTeam.map((member, idx) => (
-                   <button
-                     key={idx}
-                     disabled={member.status === 'FAINTED' || idx === activePlayerIdx}
-                     onClick={() => {
-                        handlePlayerAction({ type: 'SWITCH', index: idx });
-                     }}
-                     className={`p-2 rounded border-2 flex flex-col items-center justify-center ${
-                       member.status === 'FAINTED' 
-                         ? 'border-gray-700 bg-gray-800 text-gray-600 cursor-not-allowed' 
-                         : idx === activePlayerIdx 
-                           ? 'border-blue-500 bg-blue-900/30 text-blue-300'
-                           : 'border-gray-500 hover:border-white hover:bg-gray-700 text-white'
-                     }`}
-                   >
-                     <span className="font-bold text-xs">{member.name}</span>
-                     <div className={`w-3 h-3 rounded-full mt-1 ${
-                       member.status === 'FAINTED' ? 'bg-red-900' : 'bg-green-500'
-                     }`}></div>
-                   </button>
-                 ))}
-                 <button 
-                   onClick={() => setPhase('SELECT')}
-                   disabled={activePlayer.status === 'FAINTED'}
-                   className="col-span-3 text-xs text-gray-400 hover:text-white mt-2"
-                 >
-                   Cancel
-                 </button>
-              </div>
-            )}
-
-            {/* Main Battle Controls */}
-            {(phase === 'SELECT' || phase === 'WAITING' || phase === 'ANIMATING') ? (
-              <>
-                 <div className="col-span-2 flex justify-between items-center mb-1 px-1">
-                    <span className="text-xs font-bold text-gray-500 uppercase">Moves</span>
-                    <button 
-                      onClick={() => setPhase('SWITCH')}
-                      disabled={phase !== 'SELECT'}
-                      className="text-xs bg-purple-900 hover:bg-purple-700 text-purple-200 px-2 py-1 rounded disabled:opacity-50"
-                    >
-                      Switch Shape
-                    </button>
-                 </div>
-                 {activePlayer.moves.map((move, idx) => (
-                   <button
-                     key={move.id}
-                     disabled={phase !== 'SELECT'}
-                     onClick={() => handlePlayerAction({ type: 'MOVE', index: idx })}
-                     className="relative group bg-gray-700 hover:bg-gray-600 border-2 border-gray-600 hover:border-blue-400 rounded-lg p-2 text-left transition-all disabled:opacity-50 disabled:cursor-wait"
-                   >
-                     <div className="flex justify-between items-center">
-                       <span className="font-bold text-white text-sm">{move.name}</span>
-                       <span className={`text-[10px] px-1 rounded ${
-                         move.type === ShapeType.SHARP ? 'bg-red-900 text-red-200' :
-                         move.type === ShapeType.ROUND ? 'bg-blue-900 text-blue-200' :
-                         move.type === ShapeType.STABLE ? 'bg-green-900 text-green-200' :
-                         'bg-gray-900 text-gray-200'
-                       }`}>
-                         {move.type}
-                       </span>
-                     </div>
-                     <div className="text-[10px] text-gray-400 mt-1">
-                       Power: {move.power > 0 ? move.power : '-'} | PP: {move.pp}/{move.maxPp}
-                     </div>
-                     
-                     <div className="absolute bottom-full left-0 mb-2 w-full bg-black text-white text-xs p-2 rounded hidden group-hover:block z-50">
-                       {move.description}
-                     </div>
-                   </button>
-                 ))}
-              </>
-            ) : null}
-            
-            {(phase === 'WAITING' || phase === 'ANIMATING') && (
-               <div className="absolute inset-0 bg-gray-900/50 flex items-center justify-center z-30 pointer-events-none">
-                 <span className="text-white font-bold animate-pulse">
-                   {phase === 'WAITING' ? 'Waiting for opponent...' : 'Processing...'}
-                 </span>
-               </div>
-            )}
-
-          </div>
-        </div>
-      </div>
+    <div className="min-h-screen bg-gray-900 flex flex-col items-center p-2 md:p-4">
       
-      <div className="fixed bottom-2 right-2 text-xs text-gray-500 opacity-50">
-         Type Adv: SHARP &gt; ROUND &gt; STABLE &gt; SHARP
+      {/* Top Bar */}
+      <div className="w-full max-w-4xl flex justify-between items-center mb-4 bg-gray-800 p-2 rounded shadow">
+         <div className="text-yellow-400 pixel-font text-xs md:text-sm">Room: {gameMode === 'SINGLE' ? 'CPU' : (roomId || inputRoomId)}</div>
+         <div className="text-gray-400 text-xs">Turn {phase}</div>
       </div>
+
+      {/* Battle Arena */}
+      <div className="relative w-full max-w-4xl h-[400px] md:h-[500px] bg-gray-800 rounded-xl overflow-hidden shadow-2xl border-4 border-gray-700">
+        {/* Background Grid */}
+        <div className="absolute inset-0 opacity-10" 
+             style={{ 
+               backgroundImage: 'linear-gradient(#4f46e5 1px, transparent 1px), linear-gradient(90deg, #4f46e5 1px, transparent 1px)', 
+               backgroundSize: '40px 40px' 
+             }} 
+        />
+
+        {/* Enemy Area (Top Right) */}
+        <div className="absolute top-8 right-8 md:top-12 md:right-20 flex flex-col items-end z-10">
+          <HealthBar current={activeEnemy.stats.hp} max={activeEnemy.stats.maxHp} label={activeEnemy.name} />
+          <div className="mt-4 transform scale-75 md:scale-100">
+             <ShapeVisual 
+               shape={activeEnemy} 
+               animation={animatingShape === 'enemy' ? animatingAction : undefined} 
+             />
+          </div>
+          <div className="flex mt-2 gap-1">
+             {enemyTeam.map((s, i) => (
+               <div key={i} className={`w-3 h-3 rounded-full ${s.stats.hp > 0 ? 'bg-green-500' : 'bg-gray-600'}`} />
+             ))}
+          </div>
+        </div>
+
+        {/* Player Area (Bottom Left) */}
+        <div className="absolute bottom-8 left-8 md:bottom-12 md:left-20 flex flex-col items-start z-10">
+           <div className="transform scale-75 md:scale-100 mb-4">
+             <ShapeVisual 
+               shape={activePlayer} 
+               isAlly 
+               animation={animatingShape === 'player' ? animatingAction : undefined}
+             />
+           </div>
+           <HealthBar current={activePlayer.stats.hp} max={activePlayer.stats.maxHp} label={activePlayer.name} isAlly />
+           <div className="flex mt-2 gap-1">
+             {playerTeam.map((s, i) => (
+               <div key={i} className={`w-3 h-3 rounded-full ${s.stats.hp > 0 ? 'bg-green-500' : 'bg-gray-600'}`} />
+             ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Controls & Logs */}
+      <div className="w-full max-w-4xl grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 h-64">
+        
+        {/* Action Panel */}
+        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 relative overflow-hidden">
+          
+          {phase === 'WAITING' && (
+             <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-20">
+               <span className="text-white pixel-font animate-pulse">Waiting for opponent...</span>
+             </div>
+          )}
+
+          {phase === 'SWITCH' && (
+            <div className="grid grid-cols-2 gap-2 h-full">
+              {playerTeam.map((member, idx) => (
+                <button
+                  key={member.id}
+                  disabled={member.stats.hp <= 0 || idx === activePlayerIdx}
+                  onClick={() => handleForcedSwitch(idx)}
+                  className={`p-2 rounded text-left border ${
+                    member.stats.hp <= 0 ? 'opacity-50 bg-gray-900 border-gray-800' : 
+                    idx === activePlayerIdx ? 'border-yellow-500 bg-yellow-900/20' :
+                    'bg-gray-700 hover:bg-gray-600 border-gray-500'
+                  }`}
+                >
+                  <div className="font-bold text-sm">{member.name}</div>
+                  <div className="text-xs">HP: {member.stats.hp}/{member.stats.maxHp}</div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {(phase === 'SELECT' || phase === 'GAME_OVER') && (
+            <div className="grid grid-cols-2 gap-2 h-full">
+               {activePlayer.moves.map((move, idx) => (
+                 <button
+                   key={idx}
+                   disabled={phase === 'GAME_OVER'}
+                   onClick={() => handlePlayerAction({ type: 'MOVE', index: idx })}
+                   className="relative group bg-gray-700 hover:bg-gray-600 border-2 border-gray-600 hover:border-blue-400 rounded-lg p-2 transition-all active:scale-95 flex flex-col justify-center"
+                 >
+                   <div className="font-bold text-white text-sm md:text-base flex justify-between">
+                     <span>{move.name}</span>
+                     <span className="text-[10px] bg-gray-900 px-1 rounded text-gray-400">{move.type.substring(0,3)}</span>
+                   </div>
+                   <div className="text-xs text-gray-400 mt-1 flex justify-between w-full">
+                      <span>{move.category}</span>
+                      <span>Pow: {move.power > 0 ? move.power : '-'}</span>
+                   </div>
+                   {/* Tooltip */}
+                   <div className="absolute bottom-full left-0 w-full bg-black text-white text-xs p-2 rounded hidden group-hover:block z-20 mb-2">
+                     {move.description} {move.priority ? `(Prio ${move.priority})` : ''}
+                   </div>
+                 </button>
+               ))}
+               
+               {/* Switch Button (Overlay or separate tab, simplifying for UI) */}
+               {/* For simplicity in this jam version, switch logic is usually a separate menu. 
+                   We will add a small switch button in the corner or just assume current moves only for now 
+                   unless we add a "Switch" tab. Let's keep it simple: Moves only unless fainted. 
+                */}
+            </div>
+          )}
+        </div>
+
+        {/* Log Panel */}
+        <div className="bg-black/90 rounded-lg p-4 border border-green-900 font-mono text-sm overflow-y-auto shadow-inner h-full">
+          {logs.map((log, i) => (
+            <div key={i} className="mb-1 text-green-400 border-b border-green-900/30 pb-1 last:border-0">
+              <span className="mr-2 opacity-50">{'>'}</span>{log}
+            </div>
+          ))}
+          <div ref={logsEndRef} />
+        </div>
+
+      </div>
+
+      {phase === 'GAME_OVER' && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+           <div className="bg-gray-800 p-8 rounded border-4 border-yellow-500 text-center">
+              <h2 className="text-3xl text-white font-bold mb-4">{
+                 playerTeam.some(s => s.stats.hp > 0) ? 'VICTORY!' : 'DEFEAT'
+              }</h2>
+              <button 
+                onClick={() => window.location.reload()}
+                className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded"
+              >
+                PLAY AGAIN
+              </button>
+           </div>
+        </div>
+      )}
     </div>
   );
 }

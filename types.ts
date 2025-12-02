@@ -1,9 +1,11 @@
 
 export enum ShapeType {
-  SHARP = 'SHARP',   // Beats Round
-  ROUND = 'ROUND',   // Beats Stable
-  STABLE = 'STABLE', // Beats Sharp
-  VOID = 'VOID'      // Neutral
+  SHARP = 'SHARP',   // Beats Round, Weak to Stable
+  ROUND = 'ROUND',   // Beats Stable, Weak to Sharp
+  STABLE = 'STABLE', // Beats Sharp, Weak to Round
+  VOID = 'VOID',     // Neutral
+  FLUX = 'FLUX',     // Beats Round/Void, Weak to Glitch
+  GLITCH = 'GLITCH'  // Beats Stable/Flux, Weak to Sharp
 }
 
 export enum MoveCategory {
@@ -21,7 +23,8 @@ export interface Move {
   accuracy: number;
   pp: number;
   maxPp: number;
-  priority?: number;
+  priority?: number; // Higher goes first
+  drain?: boolean;   // Heals user for 50% of dmg dealt
   description: string;
   effect?: 'HEAL' | 'BUFF_ATK' | 'BUFF_DEF';
 }
@@ -30,9 +33,10 @@ export interface Item {
   id: string;
   name: string;
   description: string;
-  effectType: 'STAT_BOOST' | 'HEAL_TURN' | 'RESIST';
+  effectType: 'STAT_BOOST' | 'HEAL_TURN' | 'RESIST' | 'RECOIL_BOOST' | 'HEAL_LOW';
   stat?: 'atk' | 'def' | 'spd' | 'hp';
   value?: number; // Multiplier or flat amount
+  consumed?: boolean; // If true, item is removed after use
 }
 
 export interface ShapeStats {
@@ -73,7 +77,7 @@ export interface PlayerAction {
 }
 
 export interface TurnEvent {
-  type: 'LOG' | 'DAMAGE' | 'HEAL' | 'FAINT' | 'ATTACK_ANIM' | 'SWITCH_ANIM' | 'WIN' | 'LOSE';
+  type: 'LOG' | 'DAMAGE' | 'HEAL' | 'FAINT' | 'ATTACK_ANIM' | 'SWITCH_ANIM' | 'WIN' | 'LOSE' | 'ITEM_USE';
   message?: string;
   target?: 'player' | 'enemy';
   attacker?: 'player' | 'enemy'; // For attack animations

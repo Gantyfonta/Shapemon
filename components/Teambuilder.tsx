@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
-import { SPECIES, ITEMS, MOVES_POOL, TeamMemberConfig } from '../constants';
-import { ShapeVisual } from './ShapeVisual';
-import { createInstance } from '../constants';
+import { SPECIES, ITEMS, MOVES_POOL, TeamMemberConfig } from '../constants.ts';
+import { ShapeVisual } from './ShapeVisual.tsx';
+import { createInstance } from '../constants.ts';
 
 interface TeambuilderProps {
   onBack: () => void;

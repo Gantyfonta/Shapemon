@@ -1,6 +1,7 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
-import { ShapeInstance, Move } from '../types';
-import { TYPE_CHART } from '../constants';
+import { ShapeInstance, Move } from '../types.ts';
+import { TYPE_CHART } from '../constants.ts';
 
 export interface AIMoveDecision {
   moveIndex: number;

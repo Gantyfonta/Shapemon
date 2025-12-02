@@ -1,5 +1,6 @@
+
 import React from 'react';
-import { ShapeInstance } from '../types';
+import { ShapeInstance } from '../types.ts';
 
 interface ShapeVisualProps {
   shape: ShapeInstance;
@@ -8,9 +9,6 @@ interface ShapeVisualProps {
 }
 
 export const ShapeVisual: React.FC<ShapeVisualProps> = ({ shape, isAlly, animation }) => {
-  const size = 120;
-  
-  // Dynamic color handling
   const colorClass = shape.spriteColor || 'text-gray-400';
   
   const getPath = () => {
@@ -23,8 +21,30 @@ export const ShapeVisual: React.FC<ShapeVisualProps> = ({ shape, isAlly, animati
         return <rect x="20" y="20" width="80" height="80" className="fill-current" stroke="white" strokeWidth="4" />;
       case 'pentagon':
         return <polygon points="60,10 110,48 91,108 29,108 10,48" className="fill-current" stroke="white" strokeWidth="4" />;
-      case 'star':
-        return <polygon points="60,10 75,45 115,45 85,70 95,110 60,85 25,110 35,70 5,45 45,45" className="fill-current" stroke="white" strokeWidth="4" />;
+      case 'hexagon':
+        return <polygon points="30,10 90,10 115,53 90,96 30,96 5,53" className="fill-current" stroke="white" strokeWidth="4" transform="translate(0, 10)" />;
+      case 'spiral':
+        return (
+          <g transform="translate(60,60)">
+             <path d="M0,0 m-40,0 a40,40 0 1,0 80,0 a40,40 0 1,0 -80,0 M0,0 m-25,0 a25,25 0 1,1 50,0 a25,25 0 1,1 -50,0 M0,0 m-10,0 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0" 
+             className="fill-none stroke-current" strokeWidth="8" />
+             <circle r="50" className="stroke-white fill-none" strokeWidth="4"/>
+          </g>
+        );
+      case 'cross':
+        return <path d="M40,10 h40 v30 h30 v40 h-30 v30 h-40 v-30 h-30 v-40 h30 z" className="fill-current" stroke="white" strokeWidth="4" />;
+      case 'rhombus':
+        return <polygon points="60,10 100,60 60,110 20,60" className="fill-current" stroke="white" strokeWidth="4" />;
+      case 'fractal':
+         return (
+           <g>
+             <rect x="30" y="30" width="60" height="60" className="fill-current" stroke="white" strokeWidth="2" />
+             <rect x="10" y="10" width="20" height="20" className="fill-current" stroke="white" strokeWidth="2" />
+             <rect x="90" y="10" width="20" height="20" className="fill-current" stroke="white" strokeWidth="2" />
+             <rect x="10" y="90" width="20" height="20" className="fill-current" stroke="white" strokeWidth="2" />
+             <rect x="90" y="90" width="20" height="20" className="fill-current" stroke="white" strokeWidth="2" />
+           </g>
+         );
       default:
         return <rect x="20" y="20" width="80" height="80" className="fill-current" />;
     }
