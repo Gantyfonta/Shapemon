@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   ShapeInstance, 
@@ -65,8 +64,10 @@ export default function App() {
       if (saved) {
         const parsed = JSON.parse(saved);
         // Basic validation to ensure data integrity
-        if (Array.isArray(parsed) && parsed.length === 3 && parsed[0].species && SPECIES[parsed[0].species as keyof typeof SPECIES]) {
+        if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].species && SPECIES[parsed[0].species as keyof typeof SPECIES]) {
           setSavedTeamConfig(parsed);
+        } else {
+          console.warn("Invalid saved team found, ignoring.");
         }
       }
     } catch (e) {
@@ -81,13 +82,16 @@ export default function App() {
 
   // --- Helper: Build Team from Config ---
   const buildTeamFromConfig = (config: TeamMemberConfig[] | null, idPrefix: string): ShapeInstance[] => {
-    if (!config) {
+    if (!config || config.length === 0) {
       // Return defaults if no config
       return idPrefix === 'p1' ? INITIAL_PLAYER_TEAM : INITIAL_ENEMY_TEAM;
     }
-    return config.map(member => 
+    const team = config.map(member => 
       createInstance(member.species, 50, idPrefix, member.moves, member.item)
     );
+    // Double safety check
+    if (team.length === 0) return idPrefix === 'p1' ? INITIAL_PLAYER_TEAM : INITIAL_ENEMY_TEAM;
+    return team;
   };
 
   // --- Multiplayer Logic ---
@@ -98,19 +102,21 @@ export default function App() {
       switch (msg.type) {
         case 'HANDSHAKE':
           // Opponent sent their team
-          const theirTeam = msg.payload.team.map((s: any) => ({
-             ...s,
-             moves: s.moves.map((m: any) => ({ ...m })) // Deep copy moves
-          }));
-          setEnemyTeam(theirTeam);
-          setLobbyStatus('Opponent connected! Starting battle...');
-          
-          // If we are guest, we also need to send our team now if we haven't (Host sends first usually)
-          // But simpliest is: Both send HANDSHAKE upon connection.
-          setTimeout(() => {
-            setPhase('SELECT');
-            addLog("Battle Started!");
-          }, 1000);
+          if (msg.payload && msg.payload.team && Array.isArray(msg.payload.team)) {
+            const theirTeam = msg.payload.team.map((s: any) => ({
+               ...s,
+               moves: s.moves.map((m: any) => ({ ...m })) // Deep copy moves
+            }));
+            setEnemyTeam(theirTeam);
+            setLobbyStatus('Opponent connected! Starting battle...');
+            
+            // If we are guest, we also need to send our team now if we haven't (Host sends first usually)
+            // But simpliest is: Both send HANDSHAKE upon connection.
+            setTimeout(() => {
+              setPhase('SELECT');
+              addLog("Battle Started!");
+            }, 1000);
+          }
           break;
 
         case 'ACTION':
@@ -426,8 +432,14 @@ export default function App() {
     );
   }
 
-  const activePlayer = playerTeam[activePlayerIdx];
-  const activeEnemy = enemyTeam[activeEnemyIdx];
+  // Safely get active shapes. If invalid, render nothing or fallback to lobby to prevent crash.
+  const activePlayer = playerTeam && playerTeam[activePlayerIdx];
+  const activeEnemy = enemyTeam && enemyTeam[activeEnemyIdx];
+
+  if (!activePlayer || !activeEnemy) {
+    // This shouldn't happen with our defensive checks, but just in case
+    return <div className="text-white">Loading Arena...</div>;
+  }
 
   // Battle Render
   return (
