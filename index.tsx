@@ -16,32 +16,40 @@ import {
   setDoc, 
   getDoc 
 } from 'firebase/firestore';
+import { getAnalytics } from 'firebase/analytics';
 
 // ==========================================
 // 0. FIREBASE CONFIGURATION
 // ==========================================
-// TODO: REPLACE THIS WITH YOUR FIREBASE PROJECT CONFIG
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY_HERE",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "SENDER_ID",
-  appId: "APP_ID"
+  apiKey: "AIzaSyB67UAyU5zhFsjPVj585QUotlFsCNluHYc",
+  authDomain: "shapemon.firebaseapp.com",
+  projectId: "shapemon",
+  storageBucket: "shapemon.firebasestorage.app",
+  messagingSenderId: "560150138740",
+  appId: "1:560150138740:web:3b6c62624e32415101e621",
+  measurementId: "G-F6JTYJZNDJ"
 };
 
 // Initialize Firebase (safely)
 let auth: any;
 let db: any;
 let googleProvider: any;
+let analytics: any;
 
 try {
   const app = initializeApp(firebaseConfig);
   auth = getAuth(app);
   db = getFirestore(app);
   googleProvider = new GoogleAuthProvider();
+  // Analytics is optional, wrap to prevent blocking if it fails
+  try {
+    analytics = getAnalytics(app);
+  } catch (e) {
+    console.warn("Firebase Analytics failed to load", e);
+  }
 } catch (e) {
-  console.warn("Firebase not initialized. Make sure to fill in firebaseConfig in index.tsx");
+  console.warn("Firebase not initialized. Check configuration.", e);
 }
 
 // ==========================================
@@ -988,7 +996,7 @@ export default function App() {
   }, [logs]);
 
   const handleLogin = async () => {
-    if (!auth) return alert("Firebase Config missing!");
+    if (!auth) return alert("Firebase Config missing or initialization failed. Check console.");
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (error) {
