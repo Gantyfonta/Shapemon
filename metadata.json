@@ -1,0 +1,5 @@
+{
+  "name": "Shape Showdown",
+  "description": "A strategic turn-based battle simulator where geometric shapes clash. Features 3v3 battles, type matchups, and an AI opponent powered by Gemini.",
+  "requestFramePermissions": []
+}

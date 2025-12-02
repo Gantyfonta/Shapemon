@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Shape Showdown</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Roboto:wght@400;700&display=swap');
+      
+      body {
+        font-family: 'Roboto', sans-serif;
+        background-color: #111827;
+        color: #f3f4f6;
+      }
+      
+      .pixel-font {
+        font-family: 'Press Start 2P', cursive;
+      }
+
+      /* Animations */
+      @keyframes shake {
+        0% { transform: translate(0, 0); }
+        25% { transform: translate(-5px, 5px); }
+        50% { transform: translate(5px, -5px); }
+        75% { transform: translate(-5px, 5px); }
+        100% { transform: translate(0, 0); }
+      }
+      
+      @keyframes attack-right {
+        0% { transform: translateX(0); }
+        50% { transform: translateX(50px) rotate(10deg); }
+        100% { transform: translateX(0); }
+      }
+
+      @keyframes attack-left {
+        0% { transform: translateX(0); }
+        50% { transform: translateX(-50px) rotate(-10deg); }
+        100% { transform: translateX(0); }
+      }
+
+      @keyframes faint {
+        0% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(50px); }
+      }
+
+      .animate-shake { animation: shake 0.5s ease-in-out; }
+      .animate-attack-right { animation: attack-right 0.3s ease-in-out; }
+      .animate-attack-left { animation: attack-left 0.3s ease-in-out; }
+      .animate-faint { animation: faint 1s forwards; }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "peerjs": "https://esm.sh/peerjs@1.5.4?bundle-deps"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
