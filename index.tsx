@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import Peer, { DataConnection } from 'peerjs';
@@ -419,14 +420,29 @@ class PeerService {
 
   private handleConnection(conn: DataConnection) {
     this.conn = conn;
-    if (this.onConnectCallback) this.onConnectCallback();
+    
+    // Critical fix: Ensure connection is truly open before attempting to run handshake callbacks
+    const setup = () => {
+      if (this.onConnectCallback) this.onConnectCallback();
+    };
+
+    if (conn.open) {
+      setup();
+    } else {
+      conn.on('open', () => {
+         setup();
+      });
+    }
+
     conn.on('data', (data) => {
       if (this.onDataCallback) this.onDataCallback(data as MultiplayerMessage);
     });
+    
     conn.on('close', () => {
       console.log("Connection closed");
       this.conn = null;
     });
+    
     conn.on('error', (err) => console.error("Data connection error:", err));
   }
 
@@ -1074,7 +1090,7 @@ export default function App() {
       setRoomId(id);
       setGameMode('MULTI_HOST');
       setPhase('LOBBY');
-      setLobbyStatus('Waiting for opponent...');
+      setLobbyStatus('Waiting for opponent to join...');
     } catch (e) {
       alert('Error starting host: ' + e);
     }
@@ -1084,12 +1100,15 @@ export default function App() {
     if (!inputRoomId) return;
     try {
       await peerService.init();
-      await peerService.connect(inputRoomId);
+      setLobbyStatus('Connecting to room...');
       setGameMode('MULTI_GUEST');
       setPhase('LOBBY');
-      setLobbyStatus('Connecting...');
+      await peerService.connect(inputRoomId);
+      setLobbyStatus('Waiting for Host data...');
     } catch (e) {
       alert('Error joining: ' + e);
+      setPhase('LOBBY');
+      setGameMode('SINGLE');
     }
   };
 
@@ -1254,7 +1273,7 @@ export default function App() {
         {roomId ? (
           <div className="bg-gray-800 p-8 rounded-lg border-2 border-blue-500 text-center animate-pulse">
             <p className="mb-4 text-gray-400">Room Code:</p>
-            <p className="text-5xl font-mono font-bold tracking-widest text-white mb-6">{roomId}</p>
+            <p className="text-5xl font-mono font-bold tracking-widest text-white mb-6 select-all cursor-pointer" onClick={() => navigator.clipboard.writeText(roomId)} title="Click to copy">{roomId}</p>
             <p className="text-sm text-blue-300">{lobbyStatus}</p>
           </div>
         ) : (
