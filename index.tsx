@@ -1,43 +1,24 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import Peer, { DataConnection } from 'peerjs';
-import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
-  signInWithPopup, 
-  GoogleAuthProvider, 
-  signOut, 
-  onAuthStateChanged,
-  User 
-} from 'firebase/auth';
-import { 
-  getFirestore, 
-  doc, 
-  setDoc, 
-  getDoc 
-} from 'firebase/firestore';
-import { getAnalytics } from 'firebase/analytics';
+
+// Firebase disabled due to environment issues
+// import { initializeApp } from 'firebase/app';
+// import { getAuth, ... } from 'firebase/auth';
+// ...
 
 // ==========================================
 // 0. FIREBASE CONFIGURATION
 // ==========================================
-const firebaseConfig = {
-  apiKey: "AIzaSyB67UAyU5zhFsjPVj585QUotlFsCNluHYc",
-  authDomain: "shapemon.firebaseapp.com",
-  projectId: "shapemon",
-  storageBucket: "shapemon.firebasestorage.app",
-  messagingSenderId: "560150138740",
-  appId: "1:560150138740:web:3b6c62624e32415101e621",
-  measurementId: "G-F6JTYJZNDJ"
-};
+// const firebaseConfig = { ... };
 
 // Initialize Firebase (safely)
-let auth: any;
-let db: any;
-let googleProvider: any;
-let analytics: any;
+let auth: any = null;
+let db: any = null;
+let googleProvider: any = null;
+let analytics: any = null;
 
+/*
 try {
   const app = initializeApp(firebaseConfig);
   auth = getAuth(app);
@@ -51,18 +32,24 @@ try {
 } catch (e) {
   console.warn("Firebase not initialized. Check configuration.", e);
 }
+*/
+
+// Mock User type for compatibility
+type User = any;
 
 // ==========================================
 // 1. TYPES
 // ==========================================
 
 export enum ShapeType {
-  SHARP = 'SHARP',   // Beats Round, Weak to Stable
-  ROUND = 'ROUND',   // Beats Stable, Weak to Sharp
-  STABLE = 'STABLE', // Beats Sharp, Weak to Round
-  VOID = 'VOID',     // Neutral
-  FLUX = 'FLUX',     // Beats Round/Void, Weak to Glitch
-  GLITCH = 'GLITCH'  // Beats Stable/Flux, Weak to Sharp
+  SHARP = 'SHARP',
+  ROUND = 'ROUND',
+  STABLE = 'STABLE',
+  VOID = 'VOID',
+  FLUX = 'FLUX',
+  GLITCH = 'GLITCH',
+  ASTRAL = 'ASTRAL',   // New: Space/Magic
+  QUANTUM = 'QUANTUM'  // New: Physics/Probability
 }
 
 export enum MoveCategory {
@@ -70,6 +57,8 @@ export enum MoveCategory {
   SPECIAL = 'SPECIAL',
   STATUS = 'STATUS'
 }
+
+export type StatusCondition = 'NONE' | 'FRAGMENTED' | 'LAGGING' | 'GLITCHED' | 'LOCKED';
 
 export interface Move {
   id: string;
@@ -80,20 +69,22 @@ export interface Move {
   accuracy: number;
   pp: number;
   maxPp: number;
-  priority?: number; // Higher goes first
-  drain?: boolean;   // Heals user for 50% of dmg dealt
+  priority?: number; 
+  drain?: boolean;   
   description: string;
   effect?: 'HEAL' | 'BUFF_ATK' | 'BUFF_DEF' | 'BUFF_SPD';
+  targetStatus?: StatusCondition; // Status to apply to enemy
+  statusChance?: number; // 0-100% chance to apply status
 }
 
 export interface Item {
   id: string;
   name: string;
   description: string;
-  effectType: 'STAT_BOOST' | 'HEAL_TURN' | 'RESIST' | 'RECOIL_BOOST' | 'HEAL_LOW' | 'CRIT_BOOST';
+  effectType: 'STAT_BOOST' | 'HEAL_TURN' | 'RESIST' | 'RECOIL_BOOST' | 'HEAL_LOW' | 'CRIT_BOOST' | 'CURE_STATUS';
   stat?: 'atk' | 'def' | 'spd' | 'hp';
-  value?: number; // Multiplier or flat amount
-  consumed?: boolean; // If true, item is removed after use
+  value?: number; 
+  consumed?: boolean; 
 }
 
 export interface Ability {
@@ -111,7 +102,7 @@ export interface ShapeStats {
 }
 
 export interface ShapeInstance {
-  id: string; // Unique ID for the battle instance
+  id: string; 
   speciesId: string;
   name: string;
   type: ShapeType;
@@ -120,7 +111,9 @@ export interface ShapeInstance {
   status: 'ALIVE' | 'FAINTED';
   spriteColor: string;
   heldItem?: Item;
-  ability: string; // Ability ID
+  ability: string; 
+  statusCondition: StatusCondition;
+  statusTurnCount: number; // Used for Locked (Sleep) duration
 }
 
 export interface BattleState {
@@ -139,13 +132,13 @@ export interface PlayerAction {
 }
 
 export interface TurnEvent {
-  type: 'LOG' | 'DAMAGE' | 'HEAL' | 'FAINT' | 'ATTACK_ANIM' | 'SWITCH_ANIM' | 'WIN' | 'LOSE' | 'ITEM_USE' | 'ABILITY';
+  type: 'LOG' | 'DAMAGE' | 'HEAL' | 'FAINT' | 'ATTACK_ANIM' | 'SWITCH_ANIM' | 'WIN' | 'LOSE' | 'ITEM_USE' | 'ABILITY' | 'STATUS_APPLY' | 'STATUS_DAMAGE';
   message?: string;
   target?: 'player' | 'enemy';
-  attacker?: 'player' | 'enemy'; // For attack animations
+  attacker?: 'player' | 'enemy'; 
   amount?: number;
-  effect?: string; // For sound effects or specific particles
-  newActiveIndex?: number; // For switches
+  effect?: string; 
+  newActiveIndex?: number; 
 }
 
 export interface MultiplayerMessage {
@@ -158,12 +151,14 @@ export interface MultiplayerMessage {
 // ==========================================
 
 export const TYPE_CHART: Record<ShapeType, Record<ShapeType, number>> = {
-  [ShapeType.SHARP]:  { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 2, [ShapeType.STABLE]: 0.5, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 1, [ShapeType.GLITCH]: 2 },
-  [ShapeType.ROUND]:  { [ShapeType.SHARP]: 0.5, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 2, [ShapeType.VOID]: 0.5, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 1 },
-  [ShapeType.STABLE]: { [ShapeType.SHARP]: 2, [ShapeType.ROUND]: 0.5, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 1, [ShapeType.GLITCH]: 0.5 },
-  [ShapeType.VOID]:   { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 1 },
-  [ShapeType.FLUX]:   { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 2, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 2, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 0.5 },
-  [ShapeType.GLITCH]: { [ShapeType.SHARP]: 0.5, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 2, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 2, [ShapeType.GLITCH]: 1 },
+  [ShapeType.SHARP]:   { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 2, [ShapeType.STABLE]: 0.5, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 1, [ShapeType.GLITCH]: 2, [ShapeType.ASTRAL]: 0.5, [ShapeType.QUANTUM]: 1 },
+  [ShapeType.ROUND]:   { [ShapeType.SHARP]: 0.5, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 2, [ShapeType.VOID]: 0.5, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 1, [ShapeType.ASTRAL]: 1, [ShapeType.QUANTUM]: 2 },
+  [ShapeType.STABLE]:  { [ShapeType.SHARP]: 2, [ShapeType.ROUND]: 0.5, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 1, [ShapeType.GLITCH]: 0.5, [ShapeType.ASTRAL]: 1, [ShapeType.QUANTUM]: 0.5 },
+  [ShapeType.VOID]:    { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 1, [ShapeType.ASTRAL]: 0.5, [ShapeType.QUANTUM]: 2 },
+  [ShapeType.FLUX]:    { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 2, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 2, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 0.5, [ShapeType.ASTRAL]: 2, [ShapeType.QUANTUM]: 1 },
+  [ShapeType.GLITCH]:  { [ShapeType.SHARP]: 0.5, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 2, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 2, [ShapeType.GLITCH]: 1, [ShapeType.ASTRAL]: 2, [ShapeType.QUANTUM]: 0.5 },
+  [ShapeType.ASTRAL]:  { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 2, [ShapeType.FLUX]: 2, [ShapeType.GLITCH]: 0.5, [ShapeType.ASTRAL]: 0.5, [ShapeType.QUANTUM]: 1 },
+  [ShapeType.QUANTUM]: { [ShapeType.SHARP]: 2, [ShapeType.ROUND]: 0.5, [ShapeType.STABLE]: 2, [ShapeType.VOID]: 0.5, [ShapeType.FLUX]: 1, [ShapeType.GLITCH]: 1, [ShapeType.ASTRAL]: 1, [ShapeType.QUANTUM]: 0.5 },
 };
 
 export const ABILITIES: Record<string, Ability> = {
@@ -176,6 +171,7 @@ export const ABILITIES: Record<string, Ability> = {
   PRISM_ARMOR: { id: 'PRISM_ARMOR', name: 'Prism Armor', description: 'Reduces super-effective damage.' },
   SPEED_BOOST: { id: 'SPEED_BOOST', name: 'Speed Boost', description: 'Speed increases every turn.' },
   PIXELATE: { id: 'PIXELATE', name: 'Pixelate', description: 'Normal moves become Glitch type.' },
+  SYNC_GUARD: { id: 'SYNC_GUARD', name: 'Sync Guard', description: 'Prevents Status Conditions.' },
 };
 
 export const ITEMS: Record<string, Item> = {
@@ -190,6 +186,7 @@ export const ITEMS: Record<string, Item> = {
   LASER_SCOPE: { id: 'LASER_SCOPE', name: 'Laser Scope', description: 'Increases critical hit ratio.', effectType: 'CRIT_BOOST', value: 1 },
   PRISM_GUARD: { id: 'PRISM_GUARD', name: 'Prism Guard', description: 'Boosts Defense by 20%.', effectType: 'STAT_BOOST', stat: 'def', value: 1.2 },
   OVERCLOCK_CHIP: { id: 'OVERCLOCK_CHIP', name: 'Overclock Chip', description: 'Boosts Speed by 20% but lowers Def.', effectType: 'STAT_BOOST', stat: 'spd', value: 1.2 },
+  DEBUGGER: { id: 'DEBUGGER', name: 'Debugger', description: 'Cures Status Condition immediately. One use.', effectType: 'CURE_STATUS', consumed: true },
 };
 
 export const MOVES_POOL: Record<string, Omit<Move, 'id' | 'maxPp'>> = {
@@ -203,14 +200,14 @@ export const MOVES_POOL: Record<string, Omit<Move, 'id' | 'maxPp'>> = {
 
   // Round Moves
   ROLLOUT: { name: 'Rollout', type: ShapeType.ROUND, category: MoveCategory.PHYSICAL, power: 40, accuracy: 90, pp: 20, description: 'Rolls into the enemy.' },
-  BUBBLE_BLAST: { name: 'Bubble Blast', type: ShapeType.ROUND, category: MoveCategory.SPECIAL, power: 65, accuracy: 100, pp: 20, description: 'Blasts bubbles.' },
+  BUBBLE_BLAST: { name: 'Bubble Blast', type: ShapeType.ROUND, category: MoveCategory.SPECIAL, power: 65, accuracy: 100, pp: 20, description: 'Blasts bubbles. May Lag.', targetStatus: 'LAGGING', statusChance: 30 },
   RECOVER: { name: 'Recover', type: ShapeType.ROUND, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 5, description: 'Heals 50% HP.', effect: 'HEAL' },
   BOUNCE: { name: 'Bounce', type: ShapeType.ROUND, category: MoveCategory.PHYSICAL, power: 85, accuracy: 85, pp: 10, description: 'Bounces on the foe.' },
   GRAVITY_WELL: { name: 'Gravity Well', type: ShapeType.ROUND, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 10, description: 'Increases Defense.', effect: 'BUFF_DEF' },
 
   // Stable Moves
   BOX_BASH: { name: 'Box Bash', type: ShapeType.STABLE, category: MoveCategory.PHYSICAL, power: 80, accuracy: 100, pp: 15, description: 'Slams a heavy side.' },
-  GRID_LOCK: { name: 'Grid Lock', type: ShapeType.STABLE, category: MoveCategory.SPECIAL, power: 60, accuracy: 100, pp: 20, description: 'Traps the enemy.' },
+  GRID_LOCK: { name: 'Grid Lock', type: ShapeType.STABLE, category: MoveCategory.SPECIAL, power: 60, accuracy: 100, pp: 20, description: 'Traps the enemy. Causes Lag.', targetStatus: 'LAGGING', statusChance: 100 },
   FORTIFY: { name: 'Fortify', type: ShapeType.STABLE, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 20, description: 'Raises Defense.', effect: 'BUFF_DEF' },
   BLOCKADE: { name: 'Blockade', type: ShapeType.STABLE, category: MoveCategory.PHYSICAL, power: 90, accuracy: 100, pp: 10, description: 'A massive wall attack.' },
   HEX_SHIELD: { name: 'Hex Shield', type: ShapeType.STABLE, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 10, description: 'Protects from attacks.', priority: 3 },
@@ -219,7 +216,7 @@ export const MOVES_POOL: Record<string, Omit<Move, 'id' | 'maxPp'>> = {
   // Void Moves
   NULL_RAY: { name: 'Null Ray', type: ShapeType.VOID, category: MoveCategory.SPECIAL, power: 70, accuracy: 100, pp: 15, description: 'A ray of nothingness.' },
   ECHO_WAVE: { name: 'Echo Wave', type: ShapeType.VOID, category: MoveCategory.SPECIAL, power: 60, accuracy: 100, pp: 20, description: 'Never misses.', priority: 0 },
-  DARK_MATTER: { name: 'Dark Matter', type: ShapeType.VOID, category: MoveCategory.SPECIAL, power: 95, accuracy: 90, pp: 10, description: 'Unstable matter attack.' },
+  DARK_MATTER: { name: 'Dark Matter', type: ShapeType.VOID, category: MoveCategory.SPECIAL, power: 95, accuracy: 90, pp: 10, description: 'Unstable matter attack. May Fragment.', targetStatus: 'FRAGMENTED', statusChance: 20 },
   BLACK_HOLE: { name: 'Black Hole', type: ShapeType.VOID, category: MoveCategory.SPECIAL, power: 140, accuracy: 90, pp: 5, description: 'Massive damage, user recharges.' },
   
   // Flux Moves
@@ -232,9 +229,21 @@ export const MOVES_POOL: Record<string, Omit<Move, 'id' | 'maxPp'>> = {
   // Glitch Moves
   DATA_STORM: { name: 'Data Storm', type: ShapeType.GLITCH, category: MoveCategory.SPECIAL, power: 80, accuracy: 95, pp: 15, description: 'Corrupts the area.' },
   BUG_BITE: { name: 'Bug Bite', type: ShapeType.GLITCH, category: MoveCategory.PHYSICAL, power: 60, accuracy: 100, pp: 20, description: 'Gnaws at code.' },
-  LAG_SPIKE: { name: 'Lag Spike', type: ShapeType.GLITCH, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 10, description: 'Lowers enemy speed (Simulated).', effect: 'BUFF_DEF' }, 
+  LAG_SPIKE: { name: 'Lag Spike', type: ShapeType.GLITCH, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 10, description: 'Lags the opponent.', targetStatus: 'LAGGING', statusChance: 100 }, 
   PIXEL_BURST: { name: 'Pixel Burst', type: ShapeType.GLITCH, category: MoveCategory.SPECIAL, power: 120, accuracy: 70, pp: 5, description: 'High damage, chaotic.' },
   BINARY_BASH: { name: 'Binary Bash', type: ShapeType.GLITCH, category: MoveCategory.PHYSICAL, power: 90, accuracy: 95, pp: 15, description: '010101 Attack.' },
+  CORRUPTION: { name: 'Corruption', type: ShapeType.GLITCH, category: MoveCategory.STATUS, power: 0, accuracy: 90, pp: 10, description: 'Glitches (Poisons) the foe.', targetStatus: 'GLITCHED', statusChance: 100 },
+
+  // Astral Moves
+  SOLAR_FLARE: { name: 'Solar Flare', type: ShapeType.ASTRAL, category: MoveCategory.SPECIAL, power: 95, accuracy: 100, pp: 10, description: 'Fragments (Burns) foe.', targetStatus: 'FRAGMENTED', statusChance: 30 },
+  COSMIC_RAY: { name: 'Cosmic Ray', type: ShapeType.ASTRAL, category: MoveCategory.SPECIAL, power: 80, accuracy: 100, pp: 15, description: 'Mystic power.' },
+  STARDUST: { name: 'Stardust', type: ShapeType.ASTRAL, category: MoveCategory.STATUS, power: 0, accuracy: 75, pp: 15, description: 'Locks (Sleeps) the foe.', targetStatus: 'LOCKED', statusChance: 100 },
+  
+  // Quantum Moves
+  ENTANGLEMENT: { name: 'Entanglement', type: ShapeType.QUANTUM, category: MoveCategory.SPECIAL, power: 70, accuracy: 100, pp: 20, description: 'Binds targets.' },
+  SUPERPOSITION: { name: 'Superposition', type: ShapeType.QUANTUM, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 10, description: 'Boosts Evasion (Speed).', effect: 'BUFF_SPD' },
+  UNCERTAINTY: { name: 'Uncertainty', type: ShapeType.QUANTUM, category: MoveCategory.PHYSICAL, power: 60, accuracy: 100, pp: 20, description: 'Variable logic. May Lock.', targetStatus: 'LOCKED', statusChance: 10 },
+  EVENT_HORIZON: { name: 'Event Horizon', type: ShapeType.QUANTUM, category: MoveCategory.SPECIAL, power: 130, accuracy: 90, pp: 5, description: 'Deals massive damage.' },
 };
 
 export const createMove = (key: string): Move => ({
@@ -326,7 +335,6 @@ export const SPECIES = {
     moveKeys: ['QUICK_STRIKE', 'TRIANGLE_BEAM', 'SIPHON', 'SPIRAL_KICK'],
     defaultAbility: 'SPEED_BOOST'
   },
-  // --- New Shapes ---
   STAR: {
     speciesId: 'star',
     name: 'Nova',
@@ -370,6 +378,25 @@ export const SPECIES = {
     baseStats: { hp: 100, atk: 120, def: 100, spd: 80 },
     color: 'text-fuchsia-500',
     moveKeys: ['BLACK_HOLE', 'DARK_MATTER', 'ECHO_WAVE', 'FORTIFY'],
+    defaultAbility: 'PRISM_ARMOR'
+  },
+  // --- New Shapes ---
+  ICOSAHEDRON: {
+    speciesId: 'icosahedron',
+    name: 'Icosas',
+    type: ShapeType.ASTRAL,
+    baseStats: { hp: 80, atk: 140, def: 80, spd: 110 },
+    color: 'text-indigo-300',
+    moveKeys: ['SOLAR_FLARE', 'COSMIC_RAY', 'STARDUST', 'NULL_RAY'],
+    defaultAbility: 'LEVITATE'
+  },
+  TESSERACT: {
+    speciesId: 'tesseract',
+    name: 'Hypercube',
+    type: ShapeType.QUANTUM,
+    baseStats: { hp: 110, atk: 100, def: 110, spd: 90 },
+    color: 'text-cyan-600',
+    moveKeys: ['ENTANGLEMENT', 'UNCERTAINTY', 'EVENT_HORIZON', 'GRID_LOCK'],
     defaultAbility: 'PRISM_ARMOR'
   }
 };
@@ -416,7 +443,9 @@ export const createInstance = (
     status: 'ALIVE',
     spriteColor: species.color,
     heldItem: { ...heldItem },
-    ability: species.defaultAbility || 'NONE'
+    ability: species.defaultAbility || 'NONE',
+    statusCondition: 'NONE',
+    statusTurnCount: 0
   };
 };
 
@@ -427,8 +456,8 @@ export const INITIAL_PLAYER_TEAM = [
 ];
 
 export const INITIAL_ENEMY_TEAM = [
-  createInstance('PENTAGON', 50, 'p2'),
-  createInstance('TRIANGLE', 50, 'p2'),
+  createInstance('TESSERACT', 50, 'p2'),
+  createInstance('ICOSAHEDRON', 50, 'p2'),
   createInstance('SQUARE', 50, 'p2'),
 ];
 
@@ -601,6 +630,11 @@ const getDamageResult = (attacker: ShapeInstance, defender: ShapeInstance, move:
   let atkStat = attacker.stats.atk;
   const defStat = move.category === 'PHYSICAL' ? defender.stats.def : defender.stats.spd;
   
+  // Status Effects
+  if (attacker.statusCondition === 'FRAGMENTED' && move.category === 'PHYSICAL') {
+    atkStat = Math.floor(atkStat * 0.5);
+  }
+
   // Item Effects
   if (attacker.heldItem) {
     if (attacker.heldItem.id === 'ATTACK_PRISM' && move.category === 'PHYSICAL') atkStat *= 1.2;
@@ -623,13 +657,10 @@ const getDamageResult = (attacker: ShapeInstance, defender: ShapeInstance, move:
     typeMult = 0;
   }
   if (defender.ability === 'PRISM_ARMOR' && typeMult > 1) {
-    typeMult *= 0.75; // Reduce super effective damage
+    typeMult *= 0.75; 
   }
 
-  // Pixelate Ability
   if (attacker.ability === 'PIXELATE' && move.type === ShapeType.VOID) {
-     // Treat as glitch for calculation (simplified)
-     // For now, let's just boost power
      atkStat *= 1.2;
   }
 
@@ -682,7 +713,8 @@ export const resolveTurn = (
     let spd = s.stats.spd;
     if (s.heldItem?.id === 'SPEED_BOOTS') spd *= 1.5;
     if (s.heldItem?.id === 'OVERCLOCK_CHIP') spd *= 1.2;
-    if (s.ability === 'SPEED_BOOST') spd *= 1.2; // Simplified logic, usually stacks
+    if (s.ability === 'SPEED_BOOST') spd *= 1.2;
+    if (s.statusCondition === 'LAGGING') spd *= 0.5;
     return spd;
   };
 
@@ -714,10 +746,39 @@ export const resolveTurn = (
     
     if (attacker.stats.hp <= 0) return;
 
+    // --- Pre-Move Status Checks ---
+    if (attacker.statusCondition === 'LOCKED') {
+       attacker.statusTurnCount--;
+       if (attacker.statusTurnCount <= 0) {
+          attacker.statusCondition = 'NONE';
+          events.push({ type: 'LOG', message: `${attacker.name} rebooted (Woke up)!` });
+       } else {
+          events.push({ type: 'LOG', message: `${attacker.name} is Locked (Sleep)!` });
+          return;
+       }
+    }
+
+    if (attacker.statusCondition === 'LAGGING') {
+       if (Math.random() < 0.25) {
+          events.push({ type: 'LOG', message: `${attacker.name} lagged out (Paralyzed)!` });
+          return;
+       }
+    }
+
     if (action.type === 'MOVE') {
       const move = attacker.moves[action.index];
       events.push({ type: 'LOG', message: `${attacker.name} used ${move.name}!` });
       events.push({ type: 'ATTACK_ANIM', attacker: attackerIsPlayer ? 'player' : 'enemy' });
+
+      // Apply Move Status Effect (if any)
+      const tryApplyStatus = (chance: number, status: StatusCondition) => {
+        if (defender.statusCondition === 'NONE' && defender.ability !== 'SYNC_GUARD' && Math.random() * 100 < chance) {
+           defender.statusCondition = status;
+           if (status === 'LOCKED') defender.statusTurnCount = Math.floor(Math.random() * 3) + 1;
+           events.push({ type: 'STATUS_APPLY', target: attackerIsPlayer ? 'enemy' : 'player', effect: status });
+           events.push({ type: 'LOG', message: `${defender.name} is now ${status}!` });
+        }
+      };
 
       if (move.category === 'STATUS') {
          if (move.effect === 'HEAL') {
@@ -736,6 +797,11 @@ export const resolveTurn = (
             events.push({ type: 'LOG', message: `${attacker.name}'s Speed rose!` });
             attacker.stats.spd = Math.floor(attacker.stats.spd * 1.5);
          }
+
+         if (move.targetStatus && move.statusChance) {
+            tryApplyStatus(move.statusChance, move.targetStatus);
+         }
+
       } else {
         const { damage, typeMult } = getDamageResult(attacker, defender, move);
         
@@ -754,6 +820,10 @@ export const resolveTurn = (
               events.push({ type: 'DAMAGE', target: attackerIsPlayer ? 'player' : 'enemy', amount: recoil });
               events.push({ type: 'LOG', message: `${attacker.name} was hurt by Rough Skin!` });
               attacker.stats.hp = Math.max(0, attacker.stats.hp - recoil);
+           }
+
+           if (move.targetStatus && move.statusChance) {
+              tryApplyStatus(move.statusChance, move.targetStatus);
            }
         }
         
@@ -776,7 +846,6 @@ export const resolveTurn = (
         }
 
         if (defender.stats.hp <= 0) {
-           // Ability: Sturdy
            if (defender.ability === 'STURDY' && defender.stats.hp + damage === defender.stats.maxHp) {
               defender.stats.hp = 1;
               events.push({ type: 'LOG', message: `${defender.name} endured the hit (Sturdy)!` });
@@ -804,7 +873,7 @@ export const resolveTurn = (
     const shape = isPlayer ? activePlayerShape : activeEnemyShape;
     const targetName = isPlayer ? 'player' : 'enemy';
 
-    if (shape.status !== 'FAINTED' && shape.stats.hp > 0) {
+    if (shape.stats.hp > 0) {
       // Regenerator
       if (shape.ability === 'REGENERATOR') {
          const healAmt = Math.floor(shape.stats.maxHp / 16);
@@ -836,6 +905,25 @@ export const resolveTurn = (
             shape.heldItem.consumed = true;
          }
       }
+
+      // --- End Turn Status Damage ---
+      if (shape.statusCondition === 'FRAGMENTED') {
+         const dmg = Math.floor(shape.stats.maxHp / 16);
+         events.push({ type: 'STATUS_DAMAGE', target: targetName as any, amount: dmg });
+         events.push({ type: 'LOG', message: `${shape.name} is hurt by Fragmentation!` });
+         shape.stats.hp = Math.max(0, shape.stats.hp - dmg);
+      }
+      if (shape.statusCondition === 'GLITCHED') {
+         const dmg = Math.floor(shape.stats.maxHp / 8);
+         events.push({ type: 'STATUS_DAMAGE', target: targetName as any, amount: dmg });
+         events.push({ type: 'LOG', message: `${shape.name} is hurt by the Glitch!` });
+         shape.stats.hp = Math.max(0, shape.stats.hp - dmg);
+      }
+
+      if (shape.stats.hp <= 0 && shape.status !== 'FAINTED') {
+         events.push({ type: 'FAINT', target: targetName as any });
+         events.push({ type: 'LOG', message: `${shape.name} fainted!` });
+      }
     }
   });
 
@@ -851,18 +939,32 @@ interface HealthBarProps {
   max: number;
   label: string;
   isAlly?: boolean;
+  status?: StatusCondition;
 }
 
-const HealthBar: React.FC<HealthBarProps> = ({ current, max, label, isAlly }) => {
+const HealthBar: React.FC<HealthBarProps> = ({ current, max, label, isAlly, status }) => {
   const percentage = Math.max(0, Math.min(100, (current / max) * 100));
   let barColor = 'bg-green-500';
   if (percentage < 50) barColor = 'bg-yellow-400';
   if (percentage < 20) barColor = 'bg-red-500';
 
+  const getStatusBadge = () => {
+     switch(status) {
+        case 'FRAGMENTED': return <span className="bg-orange-500 text-white text-[10px] px-1 rounded ml-2">FRAG</span>;
+        case 'LAGGING': return <span className="bg-yellow-500 text-black text-[10px] px-1 rounded ml-2">LAG</span>;
+        case 'GLITCHED': return <span className="bg-purple-500 text-white text-[10px] px-1 rounded ml-2">GLITCH</span>;
+        case 'LOCKED': return <span className="bg-gray-400 text-black text-[10px] px-1 rounded ml-2">LOCK</span>;
+        default: return null;
+     }
+  };
+
   return (
     <div className={`w-64 bg-gray-800 border-2 border-gray-600 p-2 rounded-lg shadow-lg ${isAlly ? 'ml-auto' : ''}`}>
       <div className="flex justify-between items-end mb-1">
-        <span className="font-bold text-white uppercase tracking-wider text-sm shadow-black drop-shadow-md">{label}</span>
+        <div className="flex items-center">
+           <span className="font-bold text-white uppercase tracking-wider text-sm shadow-black drop-shadow-md">{label}</span>
+           {getStatusBadge()}
+        </div>
         <span className="text-xs text-gray-300 pixel-font">{current}/{max}</span>
       </div>
       <div className="w-full h-4 bg-gray-700 rounded-full overflow-hidden border border-gray-600">
@@ -936,6 +1038,26 @@ const ShapeVisual: React.FC<ShapeVisualProps> = ({ shape, isAlly, animation }) =
              <line x1="60" y1="110" x2="60" y2="90" stroke="white" strokeWidth="2" />
              <line x1="15" y1="85" x2="35" y2="75" stroke="white" strokeWidth="2" />
              <line x1="15" y1="35" x2="35" y2="50" stroke="white" strokeWidth="2" />
+          </g>
+        );
+      case 'icosahedron':
+        return (
+          <g>
+             <polygon points="60,5 110,35 110,85 60,115 10,85 10,35" className="fill-current" stroke="white" strokeWidth="4" />
+             <path d="M10,35 L60,60 L110,35" stroke="white" strokeWidth="3" fill="none" />
+             <path d="M10,85 L60,60 L110,85" stroke="white" strokeWidth="3" fill="none" />
+             <path d="M60,115 L60,60 L60,5" stroke="white" strokeWidth="3" fill="none" />
+          </g>
+        );
+      case 'tesseract':
+        return (
+          <g>
+             <rect x="15" y="15" width="90" height="90" className="stroke-white fill-none" strokeWidth="4" />
+             <rect x="40" y="40" width="40" height="40" className="fill-current stroke-white" strokeWidth="3" />
+             <line x1="15" y1="15" x2="40" y2="40" stroke="white" strokeWidth="2"/>
+             <line x1="105" y1="15" x2="80" y2="40" stroke="white" strokeWidth="2"/>
+             <line x1="15" y1="105" x2="40" y2="80" stroke="white" strokeWidth="2"/>
+             <line x1="105" y1="105" x2="80" y2="80" stroke="white" strokeWidth="2"/>
           </g>
         );
       default:
@@ -1087,6 +1209,68 @@ const Teambuilder: React.FC<TeambuilderProps> = ({ onBack, onSave, initialTeam, 
   );
 };
 
+const TypeChartOverlay: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const types = Object.values(ShapeType);
+  
+  const getTypeColor = (t: ShapeType) => {
+    switch(t) {
+      case ShapeType.SHARP: return 'text-red-400';
+      case ShapeType.ROUND: return 'text-blue-400';
+      case ShapeType.STABLE: return 'text-green-400';
+      case ShapeType.VOID: return 'text-purple-400';
+      case ShapeType.FLUX: return 'text-cyan-400';
+      case ShapeType.GLITCH: return 'text-pink-500';
+      case ShapeType.ASTRAL: return 'text-indigo-300';
+      case ShapeType.QUANTUM: return 'text-cyan-600';
+      default: return 'text-gray-400';
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-gray-800 border-2 border-yellow-500 rounded-lg p-6 max-w-full max-h-full overflow-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-2xl font-bold text-white pixel-font">Type Effectiveness</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-white">✕ (ESC/SPACE)</button>
+        </div>
+        <div className="text-xs text-gray-400 mb-4 text-center">Row attacks Column</div>
+        <div className="overflow-x-auto">
+          <table className="border-collapse w-full text-xs md:text-sm">
+            <thead>
+              <tr>
+                <th className="p-2 border border-gray-700 bg-gray-900">ATK \ DEF</th>
+                {types.map(t => (
+                  <th key={t} className={`p-2 border border-gray-700 bg-gray-900 ${getTypeColor(t)}`}>{t.substring(0,3)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {types.map(attacker => (
+                <tr key={attacker}>
+                  <th className={`p-2 border border-gray-700 bg-gray-900 ${getTypeColor(attacker)} text-left`}>{attacker}</th>
+                  {types.map(defender => {
+                    const val = TYPE_CHART[attacker][defender];
+                    let cellClass = "text-gray-600";
+                    let text = "-";
+                    if (val === 2) { cellClass = "text-green-400 font-bold bg-green-900/20"; text = "2x"; }
+                    if (val === 0.5) { cellClass = "text-red-400 bg-red-900/20"; text = "½"; }
+                    if (val === 0) { cellClass = "text-gray-500 bg-gray-900"; text = "0"; }
+                    return (
+                      <td key={defender} className={`p-2 border border-gray-700 text-center ${cellClass}`}>
+                        {text}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ==========================================
 // 6. APP
 // ==========================================
@@ -1116,41 +1300,32 @@ export default function App() {
 
   const [savedTeamConfig, setSavedTeamConfig] = useState<TeamMemberConfig[] | null>(null);
   const [showTeambuilder, setShowTeambuilder] = useState(false);
+  const [showTypeChart, setShowTypeChart] = useState(false);
 
   const [user, setUser] = useState<User | null>(null);
 
+  // Define activeEnemy to be used in JSX below
+  const activeEnemy = enemyTeam[activeEnemyIdx];
+
   useEffect(() => {
-    if (!auth) return;
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
-      if (currentUser) {
-        try {
-          const docRef = doc(db, 'users', currentUser.uid);
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-             const data = docSnap.data();
-             if (data.team) {
-                setSavedTeamConfig(data.team);
-                console.log("Loaded team from Cloud");
-             }
-          } else {
-             const localSaved = localStorage.getItem('shape_showdown_team');
-             if (localSaved) {
-                const parsed = JSON.parse(localSaved);
-                await setDoc(docRef, { team: parsed });
-                setSavedTeamConfig(parsed);
-                console.log("Synced local team to Cloud");
-             }
-          }
-        } catch (e) {
-          console.error("Error loading cloud team:", e);
-        }
-      } else {
-        loadLocalTeam();
-      }
-    });
-    return () => unsubscribe();
+    // Auth disabled
+    loadLocalTeam();
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        // Prevent scrolling with spacebar
+        e.preventDefault();
+        setShowTypeChart(prev => !prev);
+      }
+      if (e.code === 'Escape' && showTypeChart) {
+        setShowTypeChart(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showTypeChart]);
 
   const loadLocalTeam = () => {
     try {
@@ -1167,24 +1342,14 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadLocalTeam();
-  }, []);
-
-  useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
   const handleLogin = async () => {
-    if (!auth) return alert("Firebase Config missing or initialization failed. Check console.");
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (error) {
-      console.error("Login failed", error);
-    }
+    alert("Authentication is currently disabled.");
   };
 
   const handleLogout = async () => {
-     await signOut(auth);
      window.location.reload();
   };
 
@@ -1198,14 +1363,6 @@ export default function App() {
   const handleTeamSave = async (newTeam: TeamMemberConfig[]) => {
      setSavedTeamConfig(newTeam);
      localStorage.setItem('shape_showdown_team', JSON.stringify(newTeam));
-     if (user && db) {
-        try {
-           await setDoc(doc(db, 'users', user.uid), { team: newTeam }, { merge: true });
-           console.log("Saved to cloud");
-        } catch (e) {
-           console.error("Cloud save failed", e);
-        }
-     }
   };
 
   useEffect(() => {
@@ -1344,6 +1501,7 @@ export default function App() {
           }, 300);
           break;
         case 'DAMAGE':
+        case 'STATUS_DAMAGE':
           setAnimatingShape(event.target === 'player' ? 'player' : 'enemy');
           setAnimatingAction('animate-shake');
           setTimeout(() => {
@@ -1354,6 +1512,7 @@ export default function App() {
           setEnemyTeam([...enemyTeam]);
           break;
         case 'HEAL':
+        case 'STATUS_APPLY':
           setPlayerTeam([...playerTeam]);
           setEnemyTeam([...enemyTeam]);
           break;
@@ -1421,145 +1580,156 @@ export default function App() {
     );
   }
 
-  if (phase === 'LOBBY') {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-900 text-white p-4">
-        <h1 className="text-4xl md:text-6xl mb-8 pixel-font text-yellow-400 text-center leading-relaxed">
-          SHAPE SHOWDOWN
-        </h1>
-        
-        {roomId ? (
-          <div className="bg-gray-800 p-8 rounded-lg border-2 border-blue-500 text-center animate-pulse">
-            <p className="mb-4 text-gray-400">Room Code:</p>
-            <p className="text-5xl font-mono font-bold tracking-widest text-white mb-6 select-all cursor-pointer" onClick={() => navigator.clipboard.writeText(roomId)} title="Click to copy">{roomId}</p>
-            <p className="text-sm text-blue-300">{lobbyStatus}</p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-4 w-full max-w-md relative">
-             <div className="absolute -top-16 right-0 w-full flex justify-end">
-                {user ? (
-                   <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-400">Hi, {user.displayName}</span>
-                      <button onClick={handleLogout} className="text-xs text-red-400 hover:text-red-300 border border-red-900 px-2 py-1 rounded">Logout</button>
-                   </div>
-                ) : (
-                   <button onClick={handleLogin} className="text-xs bg-white text-black px-3 py-1 rounded font-bold hover:bg-gray-200">Sign In (Google)</button>
-                )}
-             </div>
-
-             <button onClick={startSinglePlayer} className="py-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 rounded-lg font-bold text-xl shadow-lg transform transition active:scale-95">
-              SINGLE PLAYER
-            </button>
-            <div className="flex gap-2">
-              <button onClick={hostGame} className="flex-1 py-4 bg-purple-700 hover:bg-purple-600 rounded-lg font-bold shadow-lg">CREATE ROOM</button>
-            </div>
-            <div className="flex gap-2 bg-gray-800 p-2 rounded-lg border border-gray-700">
-              <input value={inputRoomId} onChange={(e) => setInputRoomId(e.target.value.toUpperCase())} placeholder="ROOM CODE" className="flex-1 bg-transparent text-center font-mono text-xl outline-none uppercase placeholder-gray-600" maxLength={4} />
-              <button onClick={joinGame} className="px-6 bg-green-600 hover:bg-green-500 rounded font-bold">JOIN</button>
-            </div>
-            <button onClick={() => setShowTeambuilder(true)} className="mt-4 py-2 text-gray-400 hover:text-white border border-gray-700 rounded hover:border-gray-500 transition">
-              TEAMBUILDER {user ? '(CLOUD SYNC ON)' : ''}
-            </button>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  const activePlayer = playerTeam && playerTeam[activePlayerIdx];
-  const activeEnemy = enemyTeam && enemyTeam[activeEnemyIdx];
-
-  if (!activePlayer || !activeEnemy) return <div className="text-white">Loading Arena...</div>;
-
   return (
-    <div className="min-h-screen bg-gray-900 flex flex-col items-center p-2 md:p-4">
-      <div className="w-full max-w-4xl flex justify-between items-center mb-4 bg-gray-800 p-2 rounded shadow">
-         <div className="text-yellow-400 pixel-font text-xs md:text-sm">Room: {gameMode === 'SINGLE' ? 'CPU' : (roomId || inputRoomId)}</div>
-         <div className="text-gray-400 text-xs">Turn {phase}</div>
-      </div>
-      <div className="relative w-full max-w-4xl h-[400px] md:h-[500px] bg-gray-800 rounded-xl overflow-hidden shadow-2xl border-4 border-gray-700">
-        <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'linear-gradient(#4f46e5 1px, transparent 1px), linear-gradient(90deg, #4f46e5 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
-        <div className="absolute top-8 right-8 md:top-12 md:right-20 flex flex-col items-end z-10">
-          <HealthBar current={activeEnemy.stats.hp} max={activeEnemy.stats.maxHp} label={activeEnemy.name} />
-          <div className="mt-4 transform scale-75 md:scale-100">
-             <ShapeVisual shape={activeEnemy} animation={animatingShape === 'enemy' ? animatingAction : undefined} />
-          </div>
-          <div className="flex mt-2 gap-1">
-             {enemyTeam.map((s, i) => (<div key={i} className={`w-3 h-3 rounded-full ${s.stats.hp > 0 ? 'bg-green-500' : 'bg-gray-600'}`} />))}
-          </div>
-        </div>
-        <div className="absolute bottom-8 left-8 md:bottom-12 md:left-20 flex flex-col items-start z-10">
-           <div className="transform scale-75 md:scale-100 mb-4">
-             <ShapeVisual shape={activePlayer} isAlly animation={animatingShape === 'player' ? animatingAction : undefined} />
-           </div>
-           <HealthBar current={activePlayer.stats.hp} max={activePlayer.stats.maxHp} label={activePlayer.name} isAlly />
-           <div className="flex mt-2 gap-1">
-             {playerTeam.map((s, i) => (<div key={i} className={`w-3 h-3 rounded-full ${s.stats.hp > 0 ? 'bg-green-500' : 'bg-gray-600'}`} />))}
-          </div>
-        </div>
-      </div>
-      <div className="w-full max-w-4xl grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 h-64">
-        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 relative overflow-hidden">
-          {phase === 'WAITING' && (
-             <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-20">
-               <span className="text-white pixel-font animate-pulse">Waiting for opponent...</span>
-             </div>
+    <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center font-sans">
+      {showTypeChart && <TypeChartOverlay onClose={() => setShowTypeChart(false)} />}
+      
+      {phase === 'LOBBY' ? (
+        <div className="flex flex-col items-center justify-center w-full min-h-screen p-4 text-white">
+          <h1 className="text-4xl md:text-6xl mb-8 pixel-font text-yellow-400 text-center leading-relaxed">
+            SHAPE SHOWDOWN
+          </h1>
+          
+          {roomId ? (
+            <div className="bg-gray-800 p-8 rounded-lg border-2 border-blue-500 text-center animate-pulse">
+              <p className="mb-4 text-gray-400">Room Code:</p>
+              <p className="text-5xl font-mono font-bold tracking-widest text-white mb-6 select-all cursor-pointer" onClick={() => navigator.clipboard.writeText(roomId)} title="Click to copy">{roomId}</p>
+              <p className="text-sm text-blue-300">{lobbyStatus}</p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4 w-full max-w-md relative">
+              <div className="absolute -top-16 right-0 w-full flex justify-end">
+                  {user ? (
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-400">Hi, {user.displayName}</span>
+                        <button onClick={handleLogout} className="text-xs text-red-400 hover:text-red-300 border border-red-900 px-2 py-1 rounded">Logout</button>
+                    </div>
+                  ) : (
+                    <button onClick={handleLogin} className="text-xs bg-white text-black px-3 py-1 rounded font-bold hover:bg-gray-200">Sign In (Google)</button>
+                  )}
+              </div>
+
+              <button onClick={startSinglePlayer} className="py-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 rounded-lg font-bold text-xl shadow-lg transform transition active:scale-95">
+                SINGLE PLAYER
+              </button>
+              <div className="flex gap-2">
+                <button onClick={hostGame} className="flex-1 py-4 bg-purple-700 hover:bg-purple-600 rounded-lg font-bold shadow-lg">CREATE ROOM</button>
+              </div>
+              <div className="flex gap-2 bg-gray-800 p-2 rounded-lg border border-gray-700">
+                <input value={inputRoomId} onChange={(e) => setInputRoomId(e.target.value.toUpperCase())} placeholder="ROOM CODE" className="flex-1 bg-transparent text-center font-mono text-xl outline-none uppercase placeholder-gray-600" maxLength={4} />
+                <button onClick={joinGame} className="px-6 bg-green-600 hover:bg-green-500 rounded font-bold">JOIN</button>
+              </div>
+              <button onClick={() => setShowTeambuilder(true)} className="mt-4 py-2 text-gray-400 hover:text-white border border-gray-700 rounded hover:border-gray-500 transition">
+                TEAMBUILDER {user ? '(CLOUD SYNC ON)' : ''}
+              </button>
+              <div className="text-center text-xs text-gray-500 mt-2">Press SPACE for Type Chart</div>
+            </div>
           )}
-          {phase === 'SWITCH' && (
-            <div className="grid grid-cols-2 gap-2 h-full">
-              {playerTeam.map((member, idx) => (
-                <button
-                  key={member.id}
-                  disabled={member.stats.hp <= 0 || idx === activePlayerIdx}
-                  onClick={() => handleForcedSwitch(idx)}
-                  className={`p-2 rounded text-left border ${member.stats.hp <= 0 ? 'opacity-50 bg-gray-900 border-gray-800' : idx === activePlayerIdx ? 'border-yellow-500 bg-yellow-900/20' : 'bg-gray-700 hover:bg-gray-600 border-gray-500'}`}
-                >
-                  <div className="font-bold text-sm">{member.name}</div>
-                  <div className="text-xs">HP: {member.stats.hp}/{member.stats.maxHp}</div>
-                </button>
+        </div>
+      ) : (
+        <div className="min-h-screen bg-gray-900 flex flex-col items-center p-2 md:p-4 w-full">
+          <div className="w-full max-w-4xl flex justify-between items-center mb-4 bg-gray-800 p-2 rounded shadow">
+            <div className="text-yellow-400 pixel-font text-xs md:text-sm">Room: {gameMode === 'SINGLE' ? 'CPU' : (roomId || inputRoomId)}</div>
+            <div className="flex gap-4 items-center">
+              <span className="text-gray-400 text-xs cursor-pointer hover:text-white" onClick={() => setShowTypeChart(true)}>[SPACE] Type Chart</span>
+              <div className="text-gray-400 text-xs">Turn {phase}</div>
+            </div>
+          </div>
+          
+          <div className="relative w-full max-w-4xl h-[400px] md:h-[500px] bg-gray-800 rounded-xl overflow-hidden shadow-2xl border-4 border-gray-700">
+            <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'linear-gradient(#4f46e5 1px, transparent 1px), linear-gradient(90deg, #4f46e5 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
+            
+            {/* Enemy */}
+            {activeEnemy && (
+              <div className="absolute top-8 right-8 md:top-12 md:right-20 flex flex-col items-end z-10">
+                <HealthBar current={activeEnemy.stats.hp} max={activeEnemy.stats.maxHp} label={activeEnemy.name} status={activeEnemy.statusCondition} />
+                <div className="mt-4 transform scale-75 md:scale-100">
+                  <ShapeVisual shape={activeEnemy} animation={animatingShape === 'enemy' ? animatingAction : undefined} />
+                </div>
+                <div className="flex mt-2 gap-1">
+                  {enemyTeam.map((s, i) => (<div key={i} className={`w-3 h-3 rounded-full ${s.stats.hp > 0 ? 'bg-green-500' : 'bg-gray-600'}`} />))}
+                </div>
+              </div>
+            )}
+
+            {/* Player */}
+            {activePlayerIdx !== null && playerTeam[activePlayerIdx] && (
+              <div className="absolute bottom-8 left-8 md:bottom-12 md:left-20 flex flex-col items-start z-10">
+                <div className="transform scale-75 md:scale-100 mb-4">
+                  <ShapeVisual shape={playerTeam[activePlayerIdx]} isAlly animation={animatingShape === 'player' ? animatingAction : undefined} />
+                </div>
+                <HealthBar current={playerTeam[activePlayerIdx].stats.hp} max={playerTeam[activePlayerIdx].stats.maxHp} label={playerTeam[activePlayerIdx].name} isAlly status={playerTeam[activePlayerIdx].statusCondition} />
+                <div className="flex mt-2 gap-1">
+                  {playerTeam.map((s, i) => (<div key={i} className={`w-3 h-3 rounded-full ${s.stats.hp > 0 ? 'bg-green-500' : 'bg-gray-600'}`} />))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="w-full max-w-4xl grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 h-64">
+            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 relative overflow-hidden">
+              {phase === 'WAITING' && (
+                <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-20">
+                  <span className="text-white pixel-font animate-pulse">Waiting for opponent...</span>
+                </div>
+              )}
+              {phase === 'SWITCH' && (
+                <div className="grid grid-cols-2 gap-2 h-full">
+                  {playerTeam.map((member, idx) => (
+                    <button
+                      key={member.id}
+                      disabled={member.stats.hp <= 0 || idx === activePlayerIdx}
+                      onClick={() => handleForcedSwitch(idx)}
+                      className={`p-2 rounded text-left border ${member.stats.hp <= 0 ? 'opacity-50 bg-gray-900 border-gray-800' : idx === activePlayerIdx ? 'border-yellow-500 bg-yellow-900/20' : 'bg-gray-700 hover:bg-gray-600 border-gray-500'}`}
+                    >
+                      <div className="font-bold text-sm">{member.name}</div>
+                      <div className="text-xs">HP: {member.stats.hp}/{member.stats.maxHp}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {(phase === 'SELECT' || phase === 'GAME_OVER') && playerTeam[activePlayerIdx] && (
+                <div className="grid grid-cols-2 gap-2 h-full">
+                  {playerTeam[activePlayerIdx].moves.map((move, idx) => (
+                    <button
+                      key={idx}
+                      disabled={phase === 'GAME_OVER'}
+                      onClick={() => handlePlayerAction({ type: 'MOVE', index: idx })}
+                      className="relative group bg-gray-700 hover:bg-gray-600 border-2 border-gray-600 hover:border-blue-400 rounded-lg p-2 transition-all active:scale-95 flex flex-col justify-center"
+                    >
+                      <div className="font-bold text-white text-sm md:text-base flex justify-between">
+                        <span>{move.name}</span>
+                        <span className="text-[10px] bg-gray-900 px-1 rounded text-gray-400">{move.type.substring(0,3)}</span>
+                      </div>
+                      <div className="text-xs text-gray-400 mt-1 flex justify-between w-full">
+                          <span>{move.category}</span>
+                          <span>Pow: {move.power > 0 ? move.power : '-'}</span>
+                      </div>
+                      <div className="absolute bottom-full left-0 w-full bg-black text-white text-xs p-2 rounded hidden group-hover:block z-20 mb-2">
+                        {move.description} {move.priority ? `(Prio ${move.priority})` : ''}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="bg-black/90 rounded-lg p-4 border border-green-900 font-mono text-sm overflow-y-auto shadow-inner h-full">
+              {logs.map((log, i) => (
+                <div key={i} className="mb-1 text-green-400 border-b border-green-900/30 pb-1 last:border-0">
+                  <span className="mr-2 opacity-50">{'>'}</span>{log}
+                </div>
               ))}
+              <div ref={logsEndRef} />
+            </div>
+          </div>
+          {phase === 'GAME_OVER' && (
+            <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+              <div className="bg-gray-800 p-8 rounded border-4 border-yellow-500 text-center">
+                  <h2 className="text-3xl text-white font-bold mb-4">{playerTeam.some(s => s.stats.hp > 0) ? 'VICTORY!' : 'DEFEAT'}</h2>
+                  <button onClick={() => window.location.reload()} className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded">PLAY AGAIN</button>
+              </div>
             </div>
           )}
-          {(phase === 'SELECT' || phase === 'GAME_OVER') && (
-            <div className="grid grid-cols-2 gap-2 h-full">
-               {activePlayer.moves.map((move, idx) => (
-                 <button
-                   key={idx}
-                   disabled={phase === 'GAME_OVER'}
-                   onClick={() => handlePlayerAction({ type: 'MOVE', index: idx })}
-                   className="relative group bg-gray-700 hover:bg-gray-600 border-2 border-gray-600 hover:border-blue-400 rounded-lg p-2 transition-all active:scale-95 flex flex-col justify-center"
-                 >
-                   <div className="font-bold text-white text-sm md:text-base flex justify-between">
-                     <span>{move.name}</span>
-                     <span className="text-[10px] bg-gray-900 px-1 rounded text-gray-400">{move.type.substring(0,3)}</span>
-                   </div>
-                   <div className="text-xs text-gray-400 mt-1 flex justify-between w-full">
-                      <span>{move.category}</span>
-                      <span>Pow: {move.power > 0 ? move.power : '-'}</span>
-                   </div>
-                   <div className="absolute bottom-full left-0 w-full bg-black text-white text-xs p-2 rounded hidden group-hover:block z-20 mb-2">
-                     {move.description} {move.priority ? `(Prio ${move.priority})` : ''}
-                   </div>
-                 </button>
-               ))}
-            </div>
-          )}
-        </div>
-        <div className="bg-black/90 rounded-lg p-4 border border-green-900 font-mono text-sm overflow-y-auto shadow-inner h-full">
-          {logs.map((log, i) => (
-            <div key={i} className="mb-1 text-green-400 border-b border-green-900/30 pb-1 last:border-0">
-              <span className="mr-2 opacity-50">{'>'}</span>{log}
-            </div>
-          ))}
-          <div ref={logsEndRef} />
-        </div>
-      </div>
-      {phase === 'GAME_OVER' && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
-           <div className="bg-gray-800 p-8 rounded border-4 border-yellow-500 text-center">
-              <h2 className="text-3xl text-white font-bold mb-4">{playerTeam.some(s => s.stats.hp > 0) ? 'VICTORY!' : 'DEFEAT'}</h2>
-              <button onClick={() => window.location.reload()} className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded">PLAY AGAIN</button>
-           </div>
         </div>
       )}
     </div>
@@ -1576,4 +1746,3 @@ root.render(
     <App />
   </React.StrictMode>
 );
-    
