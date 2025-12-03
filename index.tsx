@@ -43,7 +43,6 @@ try {
   auth = getAuth(app);
   db = getFirestore(app);
   googleProvider = new GoogleAuthProvider();
-  // Analytics is optional, wrap to prevent blocking if it fails
   try {
     analytics = getAnalytics(app);
   } catch (e) {
@@ -84,17 +83,23 @@ export interface Move {
   priority?: number; // Higher goes first
   drain?: boolean;   // Heals user for 50% of dmg dealt
   description: string;
-  effect?: 'HEAL' | 'BUFF_ATK' | 'BUFF_DEF';
+  effect?: 'HEAL' | 'BUFF_ATK' | 'BUFF_DEF' | 'BUFF_SPD';
 }
 
 export interface Item {
   id: string;
   name: string;
   description: string;
-  effectType: 'STAT_BOOST' | 'HEAL_TURN' | 'RESIST' | 'RECOIL_BOOST' | 'HEAL_LOW';
+  effectType: 'STAT_BOOST' | 'HEAL_TURN' | 'RESIST' | 'RECOIL_BOOST' | 'HEAL_LOW' | 'CRIT_BOOST';
   stat?: 'atk' | 'def' | 'spd' | 'hp';
   value?: number; // Multiplier or flat amount
   consumed?: boolean; // If true, item is removed after use
+}
+
+export interface Ability {
+  id: string;
+  name: string;
+  description: string;
 }
 
 export interface ShapeStats {
@@ -115,6 +120,7 @@ export interface ShapeInstance {
   status: 'ALIVE' | 'FAINTED';
   spriteColor: string;
   heldItem?: Item;
+  ability: string; // Ability ID
 }
 
 export interface BattleState {
@@ -133,7 +139,7 @@ export interface PlayerAction {
 }
 
 export interface TurnEvent {
-  type: 'LOG' | 'DAMAGE' | 'HEAL' | 'FAINT' | 'ATTACK_ANIM' | 'SWITCH_ANIM' | 'WIN' | 'LOSE' | 'ITEM_USE';
+  type: 'LOG' | 'DAMAGE' | 'HEAL' | 'FAINT' | 'ATTACK_ANIM' | 'SWITCH_ANIM' | 'WIN' | 'LOSE' | 'ITEM_USE' | 'ABILITY';
   message?: string;
   target?: 'player' | 'enemy';
   attacker?: 'player' | 'enemy'; // For attack animations
@@ -160,6 +166,18 @@ export const TYPE_CHART: Record<ShapeType, Record<ShapeType, number>> = {
   [ShapeType.GLITCH]: { [ShapeType.SHARP]: 0.5, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 2, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 2, [ShapeType.GLITCH]: 1 },
 };
 
+export const ABILITIES: Record<string, Ability> = {
+  NONE: { id: 'NONE', name: 'None', description: 'No special ability.' },
+  LEVITATE: { id: 'LEVITATE', name: 'Levitate', description: 'Immune to STABLE type moves.' },
+  ROUGH_SKIN: { id: 'ROUGH_SKIN', name: 'Rough Skin', description: 'Damages attackers on contact.' },
+  DOWNLOAD: { id: 'DOWNLOAD', name: 'Download', description: 'Boosts Attack on entry.' },
+  REGENERATOR: { id: 'REGENERATOR', name: 'Regenerator', description: 'Restores HP a little every turn.' },
+  STURDY: { id: 'STURDY', name: 'Sturdy', description: 'Cannot be KOed in one hit from full HP.' },
+  PRISM_ARMOR: { id: 'PRISM_ARMOR', name: 'Prism Armor', description: 'Reduces super-effective damage.' },
+  SPEED_BOOST: { id: 'SPEED_BOOST', name: 'Speed Boost', description: 'Speed increases every turn.' },
+  PIXELATE: { id: 'PIXELATE', name: 'Pixelate', description: 'Normal moves become Glitch type.' },
+};
+
 export const ITEMS: Record<string, Item> = {
   NONE: { id: 'NONE', name: 'No Item', description: 'No item held.', effectType: 'STAT_BOOST', value: 0 },
   ATTACK_PRISM: { id: 'ATTACK_PRISM', name: 'Attack Prism', description: 'Boosts physical attacks by 20%.', effectType: 'STAT_BOOST', stat: 'atk', value: 1.2 },
@@ -169,6 +187,9 @@ export const ITEMS: Record<string, Item> = {
   POWER_CORE: { id: 'POWER_CORE', name: 'Power Core', description: 'Boosts damage by 30% but takes recoil.', effectType: 'RECOIL_BOOST', value: 1.3 },
   BERRY_BIT: { id: 'BERRY_BIT', name: 'Bit Berry', description: 'Heals 50% HP when below 50%. One use.', effectType: 'HEAL_LOW', value: 0.5, consumed: true },
   FOCUS_BAND: { id: 'FOCUS_BAND', name: 'Focus Band', description: '10% chance to survive a fatal hit.', effectType: 'RESIST', value: 0.1 },
+  LASER_SCOPE: { id: 'LASER_SCOPE', name: 'Laser Scope', description: 'Increases critical hit ratio.', effectType: 'CRIT_BOOST', value: 1 },
+  PRISM_GUARD: { id: 'PRISM_GUARD', name: 'Prism Guard', description: 'Boosts Defense by 20%.', effectType: 'STAT_BOOST', stat: 'def', value: 1.2 },
+  OVERCLOCK_CHIP: { id: 'OVERCLOCK_CHIP', name: 'Overclock Chip', description: 'Boosts Speed by 20% but lowers Def.', effectType: 'STAT_BOOST', stat: 'spd', value: 1.2 },
 };
 
 export const MOVES_POOL: Record<string, Omit<Move, 'id' | 'maxPp'>> = {
@@ -178,12 +199,14 @@ export const MOVES_POOL: Record<string, Omit<Move, 'id' | 'maxPp'>> = {
   SPIKE_TRAP: { name: 'Spike Trap', type: ShapeType.SHARP, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 15, description: 'Lays a trap.', effect: 'BUFF_ATK' },
   SKY_DIVE: { name: 'Sky Dive', type: ShapeType.SHARP, category: MoveCategory.PHYSICAL, power: 100, accuracy: 85, pp: 5, description: 'High power, low accuracy.' },
   CROSS_CUT: { name: 'Cross Cut', type: ShapeType.SHARP, category: MoveCategory.PHYSICAL, power: 70, accuracy: 100, pp: 20, description: 'High critical hit ratio.' },
+  STAR_FALL: { name: 'Star Fall', type: ShapeType.SHARP, category: MoveCategory.PHYSICAL, power: 120, accuracy: 80, pp: 5, description: 'A massive star crashes down.' },
 
   // Round Moves
   ROLLOUT: { name: 'Rollout', type: ShapeType.ROUND, category: MoveCategory.PHYSICAL, power: 40, accuracy: 90, pp: 20, description: 'Rolls into the enemy.' },
   BUBBLE_BLAST: { name: 'Bubble Blast', type: ShapeType.ROUND, category: MoveCategory.SPECIAL, power: 65, accuracy: 100, pp: 20, description: 'Blasts bubbles.' },
   RECOVER: { name: 'Recover', type: ShapeType.ROUND, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 5, description: 'Heals 50% HP.', effect: 'HEAL' },
   BOUNCE: { name: 'Bounce', type: ShapeType.ROUND, category: MoveCategory.PHYSICAL, power: 85, accuracy: 85, pp: 10, description: 'Bounces on the foe.' },
+  GRAVITY_WELL: { name: 'Gravity Well', type: ShapeType.ROUND, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 10, description: 'Increases Defense.', effect: 'BUFF_DEF' },
 
   // Stable Moves
   BOX_BASH: { name: 'Box Bash', type: ShapeType.STABLE, category: MoveCategory.PHYSICAL, power: 80, accuracy: 100, pp: 15, description: 'Slams a heavy side.' },
@@ -191,22 +214,27 @@ export const MOVES_POOL: Record<string, Omit<Move, 'id' | 'maxPp'>> = {
   FORTIFY: { name: 'Fortify', type: ShapeType.STABLE, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 20, description: 'Raises Defense.', effect: 'BUFF_DEF' },
   BLOCKADE: { name: 'Blockade', type: ShapeType.STABLE, category: MoveCategory.PHYSICAL, power: 90, accuracy: 100, pp: 10, description: 'A massive wall attack.' },
   HEX_SHIELD: { name: 'Hex Shield', type: ShapeType.STABLE, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 10, description: 'Protects from attacks.', priority: 3 },
+  EARTH_SHAKE: { name: 'Earth Shake', type: ShapeType.STABLE, category: MoveCategory.PHYSICAL, power: 100, accuracy: 100, pp: 10, description: 'Shakes the ground.' },
 
   // Void Moves
   NULL_RAY: { name: 'Null Ray', type: ShapeType.VOID, category: MoveCategory.SPECIAL, power: 70, accuracy: 100, pp: 15, description: 'A ray of nothingness.' },
   ECHO_WAVE: { name: 'Echo Wave', type: ShapeType.VOID, category: MoveCategory.SPECIAL, power: 60, accuracy: 100, pp: 20, description: 'Never misses.', priority: 0 },
+  DARK_MATTER: { name: 'Dark Matter', type: ShapeType.VOID, category: MoveCategory.SPECIAL, power: 95, accuracy: 90, pp: 10, description: 'Unstable matter attack.' },
+  BLACK_HOLE: { name: 'Black Hole', type: ShapeType.VOID, category: MoveCategory.SPECIAL, power: 140, accuracy: 90, pp: 5, description: 'Massive damage, user recharges.' },
   
   // Flux Moves
   FLOW_CANNON: { name: 'Flow Cannon', type: ShapeType.FLUX, category: MoveCategory.SPECIAL, power: 110, accuracy: 80, pp: 5, description: 'Massive energy beam.' },
   QUICK_STRIKE: { name: 'Quick Strike', type: ShapeType.FLUX, category: MoveCategory.PHYSICAL, power: 40, accuracy: 100, pp: 30, description: 'Strikes first.', priority: 2 },
   SIPHON: { name: 'Siphon', type: ShapeType.FLUX, category: MoveCategory.SPECIAL, power: 60, accuracy: 100, pp: 10, description: 'Drains HP.', drain: true },
   SPIRAL_KICK: { name: 'Spiral Kick', type: ShapeType.FLUX, category: MoveCategory.PHYSICAL, power: 85, accuracy: 95, pp: 15, description: 'Spinning attack.' },
+  WAVEFORM: { name: 'Waveform', type: ShapeType.FLUX, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 15, description: 'Boosts Speed.', effect: 'BUFF_SPD' },
 
   // Glitch Moves
   DATA_STORM: { name: 'Data Storm', type: ShapeType.GLITCH, category: MoveCategory.SPECIAL, power: 80, accuracy: 95, pp: 15, description: 'Corrupts the area.' },
   BUG_BITE: { name: 'Bug Bite', type: ShapeType.GLITCH, category: MoveCategory.PHYSICAL, power: 60, accuracy: 100, pp: 20, description: 'Gnaws at code.' },
   LAG_SPIKE: { name: 'Lag Spike', type: ShapeType.GLITCH, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 10, description: 'Lowers enemy speed (Simulated).', effect: 'BUFF_DEF' }, 
   PIXEL_BURST: { name: 'Pixel Burst', type: ShapeType.GLITCH, category: MoveCategory.SPECIAL, power: 120, accuracy: 70, pp: 5, description: 'High damage, chaotic.' },
+  BINARY_BASH: { name: 'Binary Bash', type: ShapeType.GLITCH, category: MoveCategory.PHYSICAL, power: 90, accuracy: 95, pp: 15, description: '010101 Attack.' },
 };
 
 export const createMove = (key: string): Move => ({
@@ -223,7 +251,8 @@ export const SPECIES = {
     type: ShapeType.SHARP,
     baseStats: { hp: 100, atk: 120, def: 60, spd: 110 },
     color: 'text-red-400',
-    moveKeys: ['PIERCE', 'TRIANGLE_BEAM', 'FORTIFY', 'SKY_DIVE', 'CROSS_CUT']
+    moveKeys: ['PIERCE', 'TRIANGLE_BEAM', 'FORTIFY', 'SKY_DIVE', 'CROSS_CUT'],
+    defaultAbility: 'ROUGH_SKIN'
   },
   CIRCLE: {
     speciesId: 'circle',
@@ -231,7 +260,8 @@ export const SPECIES = {
     type: ShapeType.ROUND,
     baseStats: { hp: 140, atk: 70, def: 80, spd: 80 },
     color: 'text-blue-400',
-    moveKeys: ['BUBBLE_BLAST', 'RECOVER', 'ROLLOUT', 'BOUNCE']
+    moveKeys: ['BUBBLE_BLAST', 'RECOVER', 'ROLLOUT', 'BOUNCE'],
+    defaultAbility: 'REGENERATOR'
   },
   SQUARE: {
     speciesId: 'square',
@@ -239,7 +269,8 @@ export const SPECIES = {
     type: ShapeType.STABLE,
     baseStats: { hp: 120, atk: 100, def: 120, spd: 50 },
     color: 'text-green-400',
-    moveKeys: ['BOX_BASH', 'GRID_LOCK', 'FORTIFY', 'BLOCKADE', 'HEX_SHIELD']
+    moveKeys: ['BOX_BASH', 'GRID_LOCK', 'FORTIFY', 'BLOCKADE', 'HEX_SHIELD'],
+    defaultAbility: 'STURDY'
   },
   PENTAGON: {
     speciesId: 'pentagon',
@@ -247,7 +278,8 @@ export const SPECIES = {
     type: ShapeType.VOID,
     baseStats: { hp: 110, atk: 90, def: 90, spd: 90 },
     color: 'text-purple-400',
-    moveKeys: ['NULL_RAY', 'TRIANGLE_BEAM', 'BOX_BASH', 'ECHO_WAVE']
+    moveKeys: ['NULL_RAY', 'TRIANGLE_BEAM', 'BOX_BASH', 'ECHO_WAVE'],
+    defaultAbility: 'PRISM_ARMOR'
   },
   HEXAGON: {
     speciesId: 'hexagon',
@@ -255,7 +287,8 @@ export const SPECIES = {
     type: ShapeType.STABLE,
     baseStats: { hp: 150, atk: 80, def: 150, spd: 30 },
     color: 'text-yellow-600',
-    moveKeys: ['BLOCKADE', 'HEX_SHIELD', 'ROLLOUT', 'RECOVER', 'BOX_BASH']
+    moveKeys: ['BLOCKADE', 'HEX_SHIELD', 'ROLLOUT', 'RECOVER', 'BOX_BASH'],
+    defaultAbility: 'ROUGH_SKIN'
   },
   SPIRAL: {
     speciesId: 'spiral',
@@ -263,7 +296,8 @@ export const SPECIES = {
     type: ShapeType.FLUX,
     baseStats: { hp: 70, atk: 110, def: 60, spd: 140 },
     color: 'text-cyan-400',
-    moveKeys: ['SPIRAL_KICK', 'QUICK_STRIKE', 'FLOW_CANNON', 'SIPHON']
+    moveKeys: ['SPIRAL_KICK', 'QUICK_STRIKE', 'FLOW_CANNON', 'SIPHON'],
+    defaultAbility: 'SPEED_BOOST'
   },
   CROSS: {
     speciesId: 'cross',
@@ -271,7 +305,8 @@ export const SPECIES = {
     type: ShapeType.SHARP,
     baseStats: { hp: 90, atk: 130, def: 90, spd: 80 },
     color: 'text-red-600',
-    moveKeys: ['CROSS_CUT', 'SPIKE_TRAP', 'PIERCE', 'FORTIFY']
+    moveKeys: ['CROSS_CUT', 'SPIKE_TRAP', 'PIERCE', 'FORTIFY'],
+    defaultAbility: 'DOWNLOAD'
   },
   FRACTAL: {
     speciesId: 'fractal',
@@ -279,7 +314,8 @@ export const SPECIES = {
     type: ShapeType.GLITCH,
     baseStats: { hp: 80, atk: 130, def: 70, spd: 100 },
     color: 'text-pink-500',
-    moveKeys: ['DATA_STORM', 'PIXEL_BURST', 'BUG_BITE', 'LAG_SPIKE', 'NULL_RAY']
+    moveKeys: ['DATA_STORM', 'PIXEL_BURST', 'BUG_BITE', 'LAG_SPIKE', 'NULL_RAY'],
+    defaultAbility: 'PIXELATE'
   },
   RHOMBUS: {
     speciesId: 'rhombus',
@@ -287,7 +323,54 @@ export const SPECIES = {
     type: ShapeType.FLUX,
     baseStats: { hp: 100, atk: 100, def: 80, spd: 110 },
     color: 'text-teal-400',
-    moveKeys: ['QUICK_STRIKE', 'TRIANGLE_BEAM', 'SIPHON', 'SPIRAL_KICK']
+    moveKeys: ['QUICK_STRIKE', 'TRIANGLE_BEAM', 'SIPHON', 'SPIRAL_KICK'],
+    defaultAbility: 'SPEED_BOOST'
+  },
+  // --- New Shapes ---
+  STAR: {
+    speciesId: 'star',
+    name: 'Nova',
+    type: ShapeType.SHARP,
+    baseStats: { hp: 70, atk: 135, def: 60, spd: 125 },
+    color: 'text-yellow-400',
+    moveKeys: ['STAR_FALL', 'PIERCE', 'QUICK_STRIKE', 'SKY_DIVE'],
+    defaultAbility: 'DOWNLOAD'
+  },
+  TRAPEZOID: {
+    speciesId: 'trapezoid',
+    name: 'Trapezon',
+    type: ShapeType.STABLE,
+    baseStats: { hp: 130, atk: 110, def: 130, spd: 40 },
+    color: 'text-orange-500',
+    moveKeys: ['EARTH_SHAKE', 'BOX_BASH', 'BLOCKADE', 'FORTIFY'],
+    defaultAbility: 'STURDY'
+  },
+  OVAL: {
+    speciesId: 'oval',
+    name: 'Ellipsos',
+    type: ShapeType.ROUND,
+    baseStats: { hp: 160, atk: 80, def: 80, spd: 60 },
+    color: 'text-indigo-400',
+    moveKeys: ['GRAVITY_WELL', 'BUBBLE_BLAST', 'RECOVER', 'ECHO_WAVE'],
+    defaultAbility: 'REGENERATOR'
+  },
+  CRESCENT: {
+    speciesId: 'crescent',
+    name: 'Lunaris',
+    type: ShapeType.SHARP,
+    baseStats: { hp: 90, atk: 90, def: 90, spd: 100 },
+    color: 'text-gray-200',
+    moveKeys: ['CROSS_CUT', 'NULL_RAY', 'DARK_MATTER', 'SKY_DIVE'],
+    defaultAbility: 'LEVITATE'
+  },
+  DODECAHEDRON: {
+    speciesId: 'dodecahedron',
+    name: 'Dodeca',
+    type: ShapeType.VOID,
+    baseStats: { hp: 100, atk: 120, def: 100, spd: 80 },
+    color: 'text-fuchsia-500',
+    moveKeys: ['BLACK_HOLE', 'DARK_MATTER', 'ECHO_WAVE', 'FORTIFY'],
+    defaultAbility: 'PRISM_ARMOR'
   }
 };
 
@@ -297,6 +380,8 @@ export interface TeamMemberConfig {
   item: string;
 }
 
+// --- Team Generation ---
+
 export const createInstance = (
   speciesKey: keyof typeof SPECIES, 
   level: number = 50,
@@ -305,10 +390,13 @@ export const createInstance = (
   itemKey?: string
 ): ShapeInstance => {
   const species = SPECIES[speciesKey];
+  
   const calcStat = (base: number) => Math.floor((base * 2 * level) / 100) + 5;
   const calcHp = (base: number) => Math.floor((base * 2 * level) / 100) + level + 10;
+
   const moveKeys = customMoveKeys || species.moveKeys.slice(0, 4);
   const moves = moveKeys.map(k => createMove(k));
+  
   const uniqueId = idPrefix + '-' + species.speciesId + '-' + Math.random().toString(36).substr(2, 5);
   const heldItem = itemKey && ITEMS[itemKey] ? ITEMS[itemKey] : ITEMS['NONE'];
 
@@ -327,7 +415,8 @@ export const createInstance = (
     moves,
     status: 'ALIVE',
     spriteColor: species.color,
-    heldItem: { ...heldItem }
+    heldItem: { ...heldItem },
+    ability: species.defaultAbility || 'NONE'
   };
 };
 
@@ -383,7 +472,6 @@ class PeerService {
       });
 
       this.peer.on('disconnected', () => {
-        console.log("Connection to peer server lost. Reconnecting...");
         this.peer?.reconnect();
       });
 
@@ -409,7 +497,6 @@ class PeerService {
         resolve();
       });
       conn.on('error', (err) => {
-        console.error("Connection error", err);
         reject(err);
       });
       setTimeout(() => {
@@ -420,12 +507,9 @@ class PeerService {
 
   private handleConnection(conn: DataConnection) {
     this.conn = conn;
-    
-    // Critical fix: Ensure connection is truly open before attempting to run handshake callbacks
     const setup = () => {
       if (this.onConnectCallback) this.onConnectCallback();
     };
-
     if (conn.open) {
       setup();
     } else {
@@ -433,24 +517,17 @@ class PeerService {
          setup();
       });
     }
-
     conn.on('data', (data) => {
       if (this.onDataCallback) this.onDataCallback(data as MultiplayerMessage);
     });
-    
     conn.on('close', () => {
-      console.log("Connection closed");
       this.conn = null;
     });
-    
-    conn.on('error', (err) => console.error("Data connection error:", err));
   }
 
   send(data: MultiplayerMessage) {
     if (this.conn && this.conn.open) {
       this.conn.send(data);
-    } else {
-      console.warn("Cannot send, connection not open");
     }
   }
 
@@ -485,7 +562,8 @@ const getCPUMove = (cpuShape: ShapeInstance, playerShape: ShapeInstance): CPUMov
   cpuShape.moves.forEach((move, index) => {
     let damage = move.power;
     if (move.category === 'STATUS') damage = 0;
-    if (move.type === cpuShape.type) damage *= 1.5;
+    
+    // AI considers type effectiveness
     const multiplier = TYPE_CHART[move.type][playerShape.type];
     damage *= multiplier;
 
@@ -523,18 +601,44 @@ const getDamageResult = (attacker: ShapeInstance, defender: ShapeInstance, move:
   let atkStat = attacker.stats.atk;
   const defStat = move.category === 'PHYSICAL' ? defender.stats.def : defender.stats.spd;
   
+  // Item Effects
   if (attacker.heldItem) {
     if (attacker.heldItem.id === 'ATTACK_PRISM' && move.category === 'PHYSICAL') atkStat *= 1.2;
     if (attacker.heldItem.id === 'MIND_GEM' && move.category === 'SPECIAL') atkStat *= 1.2;
     if (attacker.heldItem.id === 'POWER_CORE') atkStat *= 1.3;
   }
 
-  const typeMult = TYPE_CHART[move.type][defender.type];
-  const baseDmg = (((2 * 50 / 5 + 2) * move.power * (atkStat / defStat)) / 50) + 2;
+  // Ability Effects (Attacker)
+  if (attacker.ability === 'DOWNLOAD') atkStat *= 1.1; 
+
+  // Defense Boosts
+  let effectiveDef = defStat;
+  if (defender.heldItem?.id === 'PRISM_GUARD') effectiveDef *= 1.2;
+  if (defender.heldItem?.id === 'OVERCLOCK_CHIP') effectiveDef *= 0.8;
+
+  let typeMult = TYPE_CHART[move.type][defender.type];
+  
+  // Ability Immunities/Resists
+  if (defender.ability === 'LEVITATE' && move.type === ShapeType.STABLE) {
+    typeMult = 0;
+  }
+  if (defender.ability === 'PRISM_ARMOR' && typeMult > 1) {
+    typeMult *= 0.75; // Reduce super effective damage
+  }
+
+  // Pixelate Ability
+  if (attacker.ability === 'PIXELATE' && move.type === ShapeType.VOID) {
+     // Treat as glitch for calculation (simplified)
+     // For now, let's just boost power
+     atkStat *= 1.2;
+  }
+
+  const baseDmg = (((2 * 50 / 5 + 2) * move.power * (atkStat / effectiveDef)) / 50) + 2;
   const stab = attacker.type === move.type ? 1.5 : 1.0;
   const random = (Math.floor(Math.random() * 16) + 85) / 100;
   
   let damage = Math.floor(baseDmg * stab * typeMult * random);
+  
   return { damage, typeMult };
 };
 
@@ -556,6 +660,9 @@ export const resolveTurn = (
     events.push({ type: 'SWITCH_ANIM', target: 'player', newActiveIndex: playerAction.index });
     activePlayerShape = playerTeam[playerAction.index];
     events.push({ type: 'LOG', message: `Go! ${activePlayerShape.name}!` });
+    if (activePlayerShape.ability === 'DOWNLOAD') {
+      events.push({ type: 'LOG', message: `${activePlayerShape.name}'s Download boosted its power!` });
+    }
   }
 
   if (enemyAction.type === 'SWITCH') {
@@ -563,6 +670,9 @@ export const resolveTurn = (
     events.push({ type: 'SWITCH_ANIM', target: 'enemy', newActiveIndex: enemyAction.index });
     activeEnemyShape = enemyTeam[enemyAction.index];
     events.push({ type: 'LOG', message: `Opponent sent out ${activeEnemyShape.name}!` });
+    if (activeEnemyShape.ability === 'DOWNLOAD') {
+       events.push({ type: 'LOG', message: `${activeEnemyShape.name}'s Download boosted its power!` });
+    }
   }
 
   const playerAttacking = playerAction.type === 'MOVE';
@@ -571,6 +681,8 @@ export const resolveTurn = (
   const getSpeed = (s: ShapeInstance) => {
     let spd = s.stats.spd;
     if (s.heldItem?.id === 'SPEED_BOOTS') spd *= 1.5;
+    if (s.heldItem?.id === 'OVERCLOCK_CHIP') spd *= 1.2;
+    if (s.ability === 'SPEED_BOOST') spd *= 1.2; // Simplified logic, usually stacks
     return spd;
   };
 
@@ -620,14 +732,30 @@ export const resolveTurn = (
          } else if (move.effect === 'BUFF_ATK') {
            events.push({ type: 'LOG', message: `${attacker.name}'s Attack rose!` });
            attacker.stats.atk = Math.floor(attacker.stats.atk * 1.5);
+         } else if (move.effect === 'BUFF_SPD') {
+            events.push({ type: 'LOG', message: `${attacker.name}'s Speed rose!` });
+            attacker.stats.spd = Math.floor(attacker.stats.spd * 1.5);
          }
       } else {
         const { damage, typeMult } = getDamageResult(attacker, defender, move);
-        events.push({ type: 'DAMAGE', target: attackerIsPlayer ? 'enemy' : 'player', amount: damage });
-        defender.stats.hp = Math.max(0, defender.stats.hp - damage);
+        
+        if (typeMult === 0) {
+           events.push({ type: 'LOG', message: `It had no effect on ${defender.name}!` });
+        } else {
+           events.push({ type: 'DAMAGE', target: attackerIsPlayer ? 'enemy' : 'player', amount: damage });
+           defender.stats.hp = Math.max(0, defender.stats.hp - damage);
 
-        if (typeMult > 1) events.push({ type: 'LOG', message: "It's super effective!" });
-        if (typeMult < 1) events.push({ type: 'LOG', message: "It's not very effective..." });
+           if (typeMult > 1) events.push({ type: 'LOG', message: "It's super effective!" });
+           if (typeMult < 1) events.push({ type: 'LOG', message: "It's not very effective..." });
+
+           // Ability: Rough Skin
+           if (defender.ability === 'ROUGH_SKIN' && move.category === 'PHYSICAL') {
+              const recoil = Math.floor(attacker.stats.maxHp / 8);
+              events.push({ type: 'DAMAGE', target: attackerIsPlayer ? 'player' : 'enemy', amount: recoil });
+              events.push({ type: 'LOG', message: `${attacker.name} was hurt by Rough Skin!` });
+              attacker.stats.hp = Math.max(0, attacker.stats.hp - recoil);
+           }
+        }
         
         if (move.drain) {
            const drainAmount = Math.floor(damage / 2);
@@ -648,7 +776,11 @@ export const resolveTurn = (
         }
 
         if (defender.stats.hp <= 0) {
-          if (defender.heldItem?.id === 'FOCUS_BAND' && Math.random() < 0.10) {
+           // Ability: Sturdy
+           if (defender.ability === 'STURDY' && defender.stats.hp + damage === defender.stats.maxHp) {
+              defender.stats.hp = 1;
+              events.push({ type: 'LOG', message: `${defender.name} endured the hit (Sturdy)!` });
+           } else if (defender.heldItem?.id === 'FOCUS_BAND' && Math.random() < 0.10) {
              defender.stats.hp = 1;
              events.push({ type: 'LOG', message: `${defender.name} hung on using its Focus Band!` });
           } else {
@@ -673,6 +805,17 @@ export const resolveTurn = (
     const targetName = isPlayer ? 'player' : 'enemy';
 
     if (shape.status !== 'FAINTED' && shape.stats.hp > 0) {
+      // Regenerator
+      if (shape.ability === 'REGENERATOR') {
+         const healAmt = Math.floor(shape.stats.maxHp / 16);
+         if (shape.stats.hp < shape.stats.maxHp) {
+            events.push({ type: 'HEAL', attacker: targetName as any, amount: healAmt });
+            events.push({ type: 'LOG', message: `${shape.name}'s Regenerator restored HP!` });
+            shape.stats.hp = Math.min(shape.stats.maxHp, shape.stats.hp + healAmt);
+         }
+      }
+
+      // Leftovers
       if (shape.heldItem?.id === 'CUBE_LEFTOVERS') {
          const healAmt = Math.floor(shape.stats.maxHp / 16);
          if (shape.stats.hp < shape.stats.maxHp) {
@@ -681,6 +824,8 @@ export const resolveTurn = (
             shape.stats.hp = Math.min(shape.stats.maxHp, shape.stats.hp + healAmt);
          }
       }
+
+      // Berry Check
       if (shape.heldItem?.id === 'BERRY_BIT' && !shape.heldItem.consumed) {
          if (shape.stats.hp < shape.stats.maxHp / 2) {
             const healAmt = Math.floor(shape.stats.maxHp / 2);
@@ -772,6 +917,27 @@ const ShapeVisual: React.FC<ShapeVisualProps> = ({ shape, isAlly, animation }) =
              <rect x="90" y="90" width="20" height="20" className="fill-current" stroke="white" strokeWidth="2" />
            </g>
          );
+      case 'star':
+        return <polygon points="60,5 75,45 115,45 85,70 95,110 60,85 25,110 35,70 5,45 45,45" className="fill-current" stroke="white" strokeWidth="4" />;
+      case 'trapezoid':
+        return <polygon points="40,20 80,20 100,100 20,100" className="fill-current" stroke="white" strokeWidth="4" />;
+      case 'oval':
+        return <ellipse cx="60" cy="60" rx="55" ry="35" className="fill-current" stroke="white" strokeWidth="4" />;
+      case 'crescent':
+        return <path d="M70,10 A 50,50 0 1 1 70,110 A 35,35 0 1 0 70,10 Z" className="fill-current" stroke="white" strokeWidth="4" />;
+      case 'dodecahedron':
+        return (
+          <g>
+             <polygon points="60,10 105,35 105,85 60,110 15,85 15,35" className="fill-current" stroke="white" strokeWidth="4" />
+             <polygon points="60,35 85,50 85,75 60,90 35,75 35,50" className="stroke-white fill-none" strokeWidth="2" />
+             <line x1="60" y1="10" x2="60" y2="35" stroke="white" strokeWidth="2" />
+             <line x1="105" y1="35" x2="85" y2="50" stroke="white" strokeWidth="2" />
+             <line x1="105" y1="85" x2="85" y2="75" stroke="white" strokeWidth="2" />
+             <line x1="60" y1="110" x2="60" y2="90" stroke="white" strokeWidth="2" />
+             <line x1="15" y1="85" x2="35" y2="75" stroke="white" strokeWidth="2" />
+             <line x1="15" y1="35" x2="35" y2="50" stroke="white" strokeWidth="2" />
+          </g>
+        );
       default:
         return <rect x="20" y="20" width="80" height="80" className="fill-current" />;
     }
@@ -871,6 +1037,9 @@ const Teambuilder: React.FC<TeambuilderProps> = ({ onBack, onSave, initialTeam, 
                <div className="flex flex-col items-center">
                  <ShapeVisual shape={previewInstance} isAlly />
                  <div className="mt-4 px-3 py-1 bg-gray-900 rounded border border-gray-600 text-xs text-gray-400">Level 50</div>
+                 <div className="mt-2 text-xs text-yellow-500 font-bold uppercase tracking-widest">
+                    Ability: {ABILITIES[previewInstance.ability]?.name || 'None'}
+                 </div>
                </div>
                <div className="flex-grow w-full space-y-4">
                   <div>
@@ -948,16 +1117,13 @@ export default function App() {
   const [savedTeamConfig, setSavedTeamConfig] = useState<TeamMemberConfig[] | null>(null);
   const [showTeambuilder, setShowTeambuilder] = useState(false);
 
-  // Auth State
   const [user, setUser] = useState<User | null>(null);
 
-  // Monitor Auth State
   useEffect(() => {
     if (!auth) return;
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
-        // Load team from Firestore
         try {
           const docRef = doc(db, 'users', currentUser.uid);
           const docSnap = await getDoc(docRef);
@@ -968,7 +1134,6 @@ export default function App() {
                 console.log("Loaded team from Cloud");
              }
           } else {
-             // If no cloud team, upload local team
              const localSaved = localStorage.getItem('shape_showdown_team');
              if (localSaved) {
                 const parsed = JSON.parse(localSaved);
@@ -981,7 +1146,6 @@ export default function App() {
           console.error("Error loading cloud team:", e);
         }
       } else {
-        // Fallback to local storage if logged out
         loadLocalTeam();
       }
     });
@@ -1003,7 +1167,6 @@ export default function App() {
   };
 
   useEffect(() => {
-    // Initial Load check (before auth triggers)
     loadLocalTeam();
   }, []);
 
@@ -1035,7 +1198,6 @@ export default function App() {
   const handleTeamSave = async (newTeam: TeamMemberConfig[]) => {
      setSavedTeamConfig(newTeam);
      localStorage.setItem('shape_showdown_team', JSON.stringify(newTeam));
-     
      if (user && db) {
         try {
            await setDoc(doc(db, 'users', user.uid), { team: newTeam }, { merge: true });
@@ -1136,15 +1298,11 @@ export default function App() {
     setPhase('WAITING');
 
     if (gameMode === 'SINGLE') {
-      // Simulate thinking delay for CPU
       await new Promise(r => setTimeout(r, 600));
-
       const playerShape = playerTeam[activePlayerIdx];
       const enemyShape = enemyTeam[activeEnemyIdx];
-      
       const cpuDecision = getCPUMove(enemyShape, playerShape);
       addLog(`Enemy: "${cpuDecision.taunt}"`);
-      
       const enemyAction: PlayerAction = { type: 'MOVE', index: cpuDecision.moveIndex };
       executeTurn(action, enemyAction);
     } else {
@@ -1418,3 +1576,4 @@ root.render(
     <App />
   </React.StrictMode>
 );
+    
