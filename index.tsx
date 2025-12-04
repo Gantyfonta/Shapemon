@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import Peer, { DataConnection } from 'peerjs';
@@ -172,6 +173,8 @@ export const ABILITIES: Record<string, Ability> = {
   SPEED_BOOST: { id: 'SPEED_BOOST', name: 'Speed Boost', description: 'Speed increases every turn.' },
   PIXELATE: { id: 'PIXELATE', name: 'Pixelate', description: 'Normal moves become Glitch type.' },
   SYNC_GUARD: { id: 'SYNC_GUARD', name: 'Sync Guard', description: 'Prevents Status Conditions.' },
+  AERODYNAMICS: { id: 'AERODYNAMICS', name: 'Aerodynamics', description: 'Boosts Speed when hit by Flux moves.' },
+  POINTY_END: { id: 'POINTY_END', name: 'Pointy End', description: 'Physical moves do 20% more damage.' },
 };
 
 export const ITEMS: Record<string, Item> = {
@@ -197,6 +200,7 @@ export const MOVES_POOL: Record<string, Omit<Move, 'id' | 'maxPp'>> = {
   SKY_DIVE: { name: 'Sky Dive', type: ShapeType.SHARP, category: MoveCategory.PHYSICAL, power: 100, accuracy: 85, pp: 5, description: 'High power, low accuracy.' },
   CROSS_CUT: { name: 'Cross Cut', type: ShapeType.SHARP, category: MoveCategory.PHYSICAL, power: 70, accuracy: 100, pp: 20, description: 'High critical hit ratio.' },
   STAR_FALL: { name: 'Star Fall', type: ShapeType.SHARP, category: MoveCategory.PHYSICAL, power: 120, accuracy: 80, pp: 5, description: 'A massive star crashes down.' },
+  AERO_SLASH: { name: 'Aero Slash', type: ShapeType.SHARP, category: MoveCategory.SPECIAL, power: 75, accuracy: 95, pp: 15, description: 'Slashes with air pressure.' },
 
   // Round Moves
   ROLLOUT: { name: 'Rollout', type: ShapeType.ROUND, category: MoveCategory.PHYSICAL, power: 40, accuracy: 90, pp: 20, description: 'Rolls into the enemy.' },
@@ -204,6 +208,7 @@ export const MOVES_POOL: Record<string, Omit<Move, 'id' | 'maxPp'>> = {
   RECOVER: { name: 'Recover', type: ShapeType.ROUND, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 5, description: 'Heals 50% HP.', effect: 'HEAL' },
   BOUNCE: { name: 'Bounce', type: ShapeType.ROUND, category: MoveCategory.PHYSICAL, power: 85, accuracy: 85, pp: 10, description: 'Bounces on the foe.' },
   GRAVITY_WELL: { name: 'Gravity Well', type: ShapeType.ROUND, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 10, description: 'Increases Defense.', effect: 'BUFF_DEF' },
+  DRILL_RUN: { name: 'Drill Run', type: ShapeType.ROUND, category: MoveCategory.PHYSICAL, power: 80, accuracy: 95, pp: 10, description: 'Rotates at high speed.' },
 
   // Stable Moves
   BOX_BASH: { name: 'Box Bash', type: ShapeType.STABLE, category: MoveCategory.PHYSICAL, power: 80, accuracy: 100, pp: 15, description: 'Slams a heavy side.' },
@@ -225,6 +230,8 @@ export const MOVES_POOL: Record<string, Omit<Move, 'id' | 'maxPp'>> = {
   SIPHON: { name: 'Siphon', type: ShapeType.FLUX, category: MoveCategory.SPECIAL, power: 60, accuracy: 100, pp: 10, description: 'Drains HP.', drain: true },
   SPIRAL_KICK: { name: 'Spiral Kick', type: ShapeType.FLUX, category: MoveCategory.PHYSICAL, power: 85, accuracy: 95, pp: 15, description: 'Spinning attack.' },
   WAVEFORM: { name: 'Waveform', type: ShapeType.FLUX, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 15, description: 'Boosts Speed.', effect: 'BUFF_SPD' },
+  WIND_TUNNEL: { name: 'Wind Tunnel', type: ShapeType.FLUX, category: MoveCategory.STATUS, power: 0, accuracy: 100, pp: 15, description: 'Creates a tailwind (Speed+).', effect: 'BUFF_SPD' },
+  SKEW_STRIKE: { name: 'Skew Strike', type: ShapeType.FLUX, category: MoveCategory.PHYSICAL, power: 70, accuracy: 100, pp: 20, description: 'Hits from an odd angle.' },
 
   // Glitch Moves
   DATA_STORM: { name: 'Data Storm', type: ShapeType.GLITCH, category: MoveCategory.SPECIAL, power: 80, accuracy: 95, pp: 15, description: 'Corrupts the area.' },
@@ -398,6 +405,34 @@ export const SPECIES = {
     color: 'text-cyan-600',
     moveKeys: ['ENTANGLEMENT', 'UNCERTAINTY', 'EVENT_HORIZON', 'GRID_LOCK'],
     defaultAbility: 'PRISM_ARMOR'
+  },
+  // --- Newest Shapes ---
+  KITE: {
+    speciesId: 'kite',
+    name: 'Zephyr',
+    type: ShapeType.SHARP,
+    baseStats: { hp: 60, atk: 110, def: 50, spd: 150 },
+    color: 'text-sky-300',
+    moveKeys: ['AERO_SLASH', 'QUICK_STRIKE', 'SKY_DIVE', 'WIND_TUNNEL'],
+    defaultAbility: 'AERODYNAMICS'
+  },
+  PARALLELOGRAM: {
+    speciesId: 'parallelogram',
+    name: 'Skew',
+    type: ShapeType.FLUX,
+    baseStats: { hp: 90, atk: 120, def: 70, spd: 120 },
+    color: 'text-lime-400',
+    moveKeys: ['SKEW_STRIKE', 'SPIRAL_KICK', 'QUICK_STRIKE', 'PIERCE'],
+    defaultAbility: 'SPEED_BOOST'
+  },
+  CONE: {
+    speciesId: 'cone',
+    name: 'Drillbit',
+    type: ShapeType.ROUND,
+    baseStats: { hp: 110, atk: 130, def: 90, spd: 60 },
+    color: 'text-orange-600',
+    moveKeys: ['DRILL_RUN', 'PIERCE', 'ROLLOUT', 'FORTIFY'],
+    defaultAbility: 'POINTY_END'
   }
 };
 
@@ -644,6 +679,7 @@ const getDamageResult = (attacker: ShapeInstance, defender: ShapeInstance, move:
 
   // Ability Effects (Attacker)
   if (attacker.ability === 'DOWNLOAD') atkStat *= 1.1; 
+  if (attacker.ability === 'POINTY_END' && move.category === 'PHYSICAL') atkStat *= 1.2;
 
   // Defense Boosts
   let effectiveDef = defStat;
@@ -820,6 +856,12 @@ export const resolveTurn = (
               events.push({ type: 'DAMAGE', target: attackerIsPlayer ? 'player' : 'enemy', amount: recoil });
               events.push({ type: 'LOG', message: `${attacker.name} was hurt by Rough Skin!` });
               attacker.stats.hp = Math.max(0, attacker.stats.hp - recoil);
+           }
+           
+           // Ability: Aerodynamics
+           if (defender.ability === 'AERODYNAMICS' && move.type === ShapeType.FLUX) {
+              events.push({ type: 'LOG', message: `${defender.name}'s speed rose from the wind!` });
+              defender.stats.spd = Math.floor(defender.stats.spd * 1.5);
            }
 
            if (move.targetStatus && move.statusChance) {
@@ -1060,6 +1102,17 @@ const ShapeVisual: React.FC<ShapeVisualProps> = ({ shape, isAlly, animation }) =
              <line x1="105" y1="105" x2="80" y2="80" stroke="white" strokeWidth="2"/>
           </g>
         );
+      case 'kite':
+        return <polygon points="60,10 110,50 60,115 10,50" className="fill-current" stroke="white" strokeWidth="4" />;
+      case 'parallelogram':
+        return <polygon points="40,20 100,20 80,100 20,100" className="fill-current" stroke="white" strokeWidth="4" />;
+      case 'cone':
+        return (
+           <g>
+             <polygon points="60,10 100,90 20,90" className="fill-current" stroke="white" strokeWidth="4" />
+             <path d="M20,90 Q60,110 100,90" className="fill-current" stroke="white" strokeWidth="4" />
+           </g>
+        );
       default:
         return <rect x="20" y="20" width="80" height="80" className="fill-current" />;
     }
@@ -1285,6 +1338,9 @@ export default function App() {
   const [playerTeam, setPlayerTeam] = useState<ShapeInstance[]>(INITIAL_PLAYER_TEAM);
   const [enemyTeam, setEnemyTeam] = useState<ShapeInstance[]>(INITIAL_ENEMY_TEAM);
   
+  // Strict sync for multiplayer start
+  const [hasReceivedEnemyTeam, setHasReceivedEnemyTeam] = useState(false);
+
   const [activePlayerIdx, setActivePlayerIdx] = useState(0);
   const [activeEnemyIdx, setActiveEnemyIdx] = useState(0);
   
@@ -1371,13 +1427,19 @@ export default function App() {
       switch (msg.type) {
         case 'HANDSHAKE':
           if (msg.payload && msg.payload.team && Array.isArray(msg.payload.team)) {
-            const theirTeam = msg.payload.team.map((s: any) => ({ ...s, moves: s.moves.map((m: any) => ({ ...m })) }));
+            // DEEP COPY to ensure new references
+            const theirTeam = msg.payload.team.map((s: any) => ({ 
+                ...s, 
+                stats: { ...s.stats },
+                moves: s.moves.map((m: any) => ({ ...m })),
+                heldItem: s.heldItem ? { ...s.heldItem } : undefined
+            }));
+            
             setEnemyTeam(theirTeam);
-            setLobbyStatus('Opponent connected! Starting battle...');
-            setTimeout(() => {
-              setPhase('SELECT');
-              addLog("Battle Started!");
-            }, 1000);
+            setHasReceivedEnemyTeam(true);
+            setLobbyStatus('Opponent data synced! Ready.');
+            
+            addLog("Opponent found! Battle starting...");
           }
           break;
         case 'ACTION':
@@ -1397,11 +1459,23 @@ export default function App() {
     peerService.onConnect(() => {
       setIsConnected(true);
       setLobbyStatus('Connected! Exchanging team data...');
+      
       const myCurrentTeam = buildTeamFromConfig(savedTeamConfig, 'p1'); 
       setPlayerTeam(myCurrentTeam);
+      
+      // SEND HANDSHAKE
       peerService.send({ type: 'HANDSHAKE', payload: { team: myCurrentTeam } });
     });
   }, [gameMode, savedTeamConfig]);
+
+  // Effect to start battle once handshake is complete
+  useEffect(() => {
+     if (gameMode !== 'SINGLE' && isConnected && hasReceivedEnemyTeam) {
+        setTimeout(() => {
+           setPhase('SELECT');
+        }, 1000);
+     }
+  }, [gameMode, isConnected, hasReceivedEnemyTeam]);
 
   const hostGame = async () => {
     try {
@@ -1410,6 +1484,7 @@ export default function App() {
       setGameMode('MULTI_HOST');
       setPhase('LOBBY');
       setLobbyStatus('Waiting for opponent to join...');
+      setHasReceivedEnemyTeam(false);
     } catch (e) {
       alert('Error starting host: ' + e);
     }
@@ -1422,8 +1497,8 @@ export default function App() {
       setLobbyStatus('Connecting to room...');
       setGameMode('MULTI_GUEST');
       setPhase('LOBBY');
+      setHasReceivedEnemyTeam(false);
       await peerService.connect(inputRoomId);
-      setLobbyStatus('Waiting for Host data...');
     } catch (e) {
       alert('Error joining: ' + e);
       setPhase('LOBBY');
