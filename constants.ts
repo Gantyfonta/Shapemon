@@ -2,13 +2,16 @@
 import { ShapeType, MoveCategory, Move, ShapeInstance, Item } from './types.ts';
 
 // --- Type Effectiveness ---
+// Fix: Completed TYPE_CHART with all ShapeType variants to satisfy Record<ShapeType, Record<ShapeType, number>>
 export const TYPE_CHART: Record<ShapeType, Record<ShapeType, number>> = {
-  [ShapeType.SHARP]:  { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 2, [ShapeType.STABLE]: 0.5, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 1, [ShapeType.GLITCH]: 2 },
-  [ShapeType.ROUND]:  { [ShapeType.SHARP]: 0.5, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 2, [ShapeType.VOID]: 0.5, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 1 },
-  [ShapeType.STABLE]: { [ShapeType.SHARP]: 2, [ShapeType.ROUND]: 0.5, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 1, [ShapeType.GLITCH]: 0.5 },
-  [ShapeType.VOID]:   { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 1 },
-  [ShapeType.FLUX]:   { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 2, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 2, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 0.5 },
-  [ShapeType.GLITCH]: { [ShapeType.SHARP]: 0.5, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 2, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 2, [ShapeType.GLITCH]: 1 },
+  [ShapeType.SHARP]:   { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 2, [ShapeType.STABLE]: 0.5, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 1, [ShapeType.GLITCH]: 2, [ShapeType.ASTRAL]: 0.5, [ShapeType.QUANTUM]: 1 },
+  [ShapeType.ROUND]:   { [ShapeType.SHARP]: 0.5, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 2, [ShapeType.VOID]: 0.5, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 1, [ShapeType.ASTRAL]: 1, [ShapeType.QUANTUM]: 2 },
+  [ShapeType.STABLE]:  { [ShapeType.SHARP]: 2, [ShapeType.ROUND]: 0.5, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 1, [ShapeType.GLITCH]: 0.5, [ShapeType.ASTRAL]: 1, [ShapeType.QUANTUM]: 0.5 },
+  [ShapeType.VOID]:    { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 1, [ShapeType.ASTRAL]: 0.5, [ShapeType.QUANTUM]: 2 },
+  [ShapeType.FLUX]:    { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 2, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 2, [ShapeType.FLUX]: 0.5, [ShapeType.GLITCH]: 0.5, [ShapeType.ASTRAL]: 2, [ShapeType.QUANTUM]: 1 },
+  [ShapeType.GLITCH]:  { [ShapeType.SHARP]: 0.5, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 2, [ShapeType.VOID]: 1, [ShapeType.FLUX]: 2, [ShapeType.GLITCH]: 1, [ShapeType.ASTRAL]: 2, [ShapeType.QUANTUM]: 0.5 },
+  [ShapeType.ASTRAL]:  { [ShapeType.SHARP]: 1, [ShapeType.ROUND]: 1, [ShapeType.STABLE]: 1, [ShapeType.VOID]: 2, [ShapeType.FLUX]: 2, [ShapeType.GLITCH]: 0.5, [ShapeType.ASTRAL]: 0.5, [ShapeType.QUANTUM]: 1 },
+  [ShapeType.QUANTUM]: { [ShapeType.SHARP]: 2, [ShapeType.ROUND]: 0.5, [ShapeType.STABLE]: 2, [ShapeType.VOID]: 0.5, [ShapeType.FLUX]: 1, [ShapeType.GLITCH]: 1, [ShapeType.ASTRAL]: 1, [ShapeType.QUANTUM]: 0.5 },
 };
 
 // --- Items ---
@@ -153,6 +156,7 @@ export interface TeamMemberConfig {
 
 // --- Team Generation ---
 
+// Fix: Updated createInstance to match ShapeInstance interface requirements
 export const createInstance = (
   speciesKey: keyof typeof SPECIES, 
   level: number = 50,
@@ -187,7 +191,9 @@ export const createInstance = (
       spd: calcStat(species.baseStats.spd),
     },
     moves,
-    status: 'ALIVE',
+    ability: 'ADAPTIVE', // Default generic ability
+    statusCondition: 'NONE',
+    statusTurnCount: 0,
     spriteColor: species.color,
     heldItem: { ...heldItem } // Clone item to allow consumption
   };

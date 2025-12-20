@@ -187,7 +187,8 @@ export const resolveTurn = (
     const shape = isPlayer ? activePlayerShape : activeEnemyShape;
     const targetName = isPlayer ? 'player' : 'enemy';
 
-    if (shape.status !== 'FAINTED' && shape.stats.hp > 0) {
+    // Fix: Rely solely on hp > 0 since ShapeInstance doesn't have a status property
+    if (shape.stats.hp > 0) {
       // Leftovers
       if (shape.heldItem?.id === 'CUBE_LEFTOVERS') {
          const healAmt = Math.floor(shape.stats.maxHp / 16);

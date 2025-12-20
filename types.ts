@@ -1,11 +1,12 @@
-
 export enum ShapeType {
   SHARP = 'SHARP',   // Beats Round, Weak to Stable
   ROUND = 'ROUND',   // Beats Stable, Weak to Sharp
   STABLE = 'STABLE', // Beats Sharp, Weak to Round
   VOID = 'VOID',     // Neutral
   FLUX = 'FLUX',     // Beats Round/Void, Weak to Glitch
-  GLITCH = 'GLITCH'  // Beats Stable/Flux, Weak to Sharp
+  GLITCH = 'GLITCH', // Beats Stable/Flux, Weak to Sharp
+  ASTRAL = 'ASTRAL',
+  QUANTUM = 'QUANTUM'
 }
 
 export enum MoveCategory {
@@ -13,6 +14,8 @@ export enum MoveCategory {
   SPECIAL = 'SPECIAL',
   STATUS = 'STATUS'
 }
+
+export type StatusCondition = 'NONE' | 'FRAGMENTED' | 'LAGGING' | 'GLITCHED' | 'LOCKED';
 
 export interface Move {
   id: string;
@@ -23,10 +26,12 @@ export interface Move {
   accuracy: number;
   pp: number;
   maxPp: number;
-  priority?: number; // Higher goes first
-  drain?: boolean;   // Heals user for 50% of dmg dealt
+  priority?: number; 
+  drain?: boolean;   
   description: string;
-  effect?: 'HEAL' | 'BUFF_ATK' | 'BUFF_DEF';
+  effect?: 'HEAL' | 'BUFF_ATK' | 'BUFF_DEF' | 'BUFF_SPD';
+  targetStatus?: StatusCondition;
+  statusChance?: number;
 }
 
 export interface Item {
@@ -48,14 +53,16 @@ export interface ShapeStats {
 }
 
 export interface ShapeInstance {
-  id: string; // Unique ID for the battle instance
+  id: string; 
   speciesId: string;
   name: string;
   type: ShapeType;
   stats: ShapeStats;
   moves: Move[];
-  status: 'ALIVE' | 'FAINTED';
   spriteColor: string;
+  ability: string; 
+  statusCondition: StatusCondition;
+  statusTurnCount: number;
   heldItem?: Item;
 }
 
@@ -67,8 +74,6 @@ export interface BattleState {
 
 export type TurnPhase = 'SELECT' | 'WAITING' | 'ANIMATING' | 'GAME_OVER' | 'SWITCH' | 'LOBBY' | 'TEAMBUILDER';
 
-// --- Multiplayer Types ---
-
 export type GameMode = 'SINGLE' | 'MULTI_HOST' | 'MULTI_GUEST';
 
 export interface PlayerAction {
@@ -77,16 +82,16 @@ export interface PlayerAction {
 }
 
 export interface TurnEvent {
-  type: 'LOG' | 'DAMAGE' | 'HEAL' | 'FAINT' | 'ATTACK_ANIM' | 'SWITCH_ANIM' | 'WIN' | 'LOSE' | 'ITEM_USE';
+  type: 'LOG' | 'DAMAGE' | 'HEAL' | 'FAINT' | 'ATTACK_ANIM' | 'SWITCH_ANIM' | 'STATUS_APPLY' | 'STATUS_DAMAGE' | 'WIN' | 'LOSE' | 'ITEM_USE';
   message?: string;
   target?: 'player' | 'enemy';
-  attacker?: 'player' | 'enemy'; // For attack animations
+  attacker?: 'player' | 'enemy'; 
   amount?: number;
-  effect?: string; // For sound effects or specific particles
-  newActiveIndex?: number; // For switches
+  effect?: string; 
+  newActiveIndex?: number; 
 }
 
 export interface MultiplayerMessage {
-  type: 'HANDSHAKE' | 'ACTION' | 'TURN_RESULT' | 'RESTART';
+  type: 'HANDSHAKE' | 'ACTION' | 'TURN_RESULT' | 'SYNC_STATE' | 'RESTART';
   payload: any;
 }
