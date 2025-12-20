@@ -58,7 +58,8 @@ export const ShapeVisual: React.FC<ShapeVisualProps> = ({ shape, isAlly, animati
     <div className={`relative w-48 h-48 flex flex-col items-center justify-center ${animation}`}>
       <svg 
         viewBox="0 0 120 130" 
-        className={`w-full h-full drop-shadow-2xl ${colorClass} ${shape.status === 'FAINTED' ? 'opacity-0 transition-opacity duration-1000' : ''}`}
+        // Fix: Use stats.hp <= 0 to determine fainted status since status property does not exist on ShapeInstance
+        className={`w-full h-full drop-shadow-2xl ${colorClass} ${shape.stats.hp <= 0 ? 'opacity-0 transition-opacity duration-1000' : ''}`}
       >
         {shadow}
         {getPath()}
